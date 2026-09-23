@@ -2609,7 +2609,15 @@ def _items_of(payload: object) -> list:
 
 
 def _selftest() -> int:
-    """Parse one fixture per provider offline, then a malformed one (the negative control)."""
+    """Every fixture, offline: the five parsers, the malformed ones, and the definitions.
+
+    Hermetic by construction. `TMOS_USAGE_PROVIDERS_DIR` is pinned to a directory that does not
+    exist for the whole run, so a definition installed on this machine can neither change what an
+    assertion sees nor be fetched — the parsers' half of this test must not touch the network, and
+    neither must anything else. The definition tests below point that variable at their own
+    fixtures and restore it to this pinned value afterwards.
+    """
+    os.environ["TMOS_USAGE_PROVIDERS_DIR"] = str(FIXTURES / "selftest-pinned-no-definitions")
     failures: list[str] = []
     now = datetime(2026, 9, 21, 20, 0, 0, tzinfo=timezone.utc)
 
@@ -3094,6 +3102,11 @@ def _selftest() -> int:
         "a missing providers.d must be normal, not an error",
     )
     check(
+        "definitions: the selftest is hermetic — a definition installed here changes nothing",
+        load_definitions() == ([], []),
+        str(load_definitions()),
+    )
+    check(
         "definitions: every built-in adapter has a --probe provenance entry",
         set(BUILTIN_SOURCES) == set(COLLECTORS),
         str(sorted(set(BUILTIN_SOURCES) ^ set(COLLECTORS))),
@@ -3114,7 +3127,8 @@ def _selftest() -> int:
         acme.get("balance", {}).get("remaining") == 12.34
         and acme["balance"]["funded"] == 20.0
         and acme["balance"]["spent"] == 7.66
-        and acme["balance"]["estimated"] is True,
+        and isinstance(acme["balance"]["estimated"], bool)
+        and acme["balance"]["estimated"],
         str(acme.get("balance")),
     )
     check(
