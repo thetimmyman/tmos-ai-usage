@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "id": "tmos.usage",
+  "name": "TMOS AI Usage",
+  "version": "0.1.0",
+  "author": "Timothy DeFreest",
+  "license": "MIT",
+  "description": "Every AI subscription and API plan on the machine in one bar panel: rate-limit windows with reset times, prepaid balances, and local token history by day and by model. Reads the CLIs' own credentials and transcripts, read-only.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "keepLoaded": false,
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "TMOS AI Usage",
+    "description": "All subscriptions on one page: 5h/week/month headroom, resets, balances, and tokens by day and model.",
+    "category": "AI",
+    "aliases": [
+      "ai-usage",
+      "tmos-usage",
+      "usage",
+      "limits"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "staleAfterMin": 20,
+      "lowHeadroomPct": 15,
+      "warnHeadroomPct": 35,
+      "rotateSecs": 5
+    },
+    "schema": [
+      {
+        "key": "staleAfterMin",
+        "type": "integer",
+        "label": "Call the cache stale after (minutes)",
+        "description": "How old ~/.local/state/tmos/usage.json may be before the widget says so. The timer refreshes every 5 minutes.",
+        "min": 5,
+        "max": 240,
+        "step": 5,
+        "defaultValue": 20
+      },
+      {
+        "key": "lowHeadroomPct",
+        "type": "integer",
+        "label": "Urgent below (% remaining)",
+        "min": 1,
+        "max": 50,
+        "step": 1,
+        "defaultValue": 15
+      },
+      {
+        "key": "warnHeadroomPct",
+        "type": "integer",
+        "label": "Warn below (% remaining)",
+        "min": 2,
+        "max": 80,
+        "step": 1,
+        "defaultValue": 35
+      },
+      {
+        "key": "rotateSecs",
+        "type": "integer",
+        "label": "Rotate providers every (seconds, 0 = tightest only)",
+        "description": "How long each provider's name and its tightest window stay on the bar before the next rotates in. 0 pins whichever single window across all providers is lowest.",
+        "min": 0,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 5
+      }
+    ]
+  }
+}

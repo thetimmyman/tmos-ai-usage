@@ -1,0 +1,11 @@
+{
+  "_source": "GET https://api.cline.bot/api/v1/users/me/plan/usage-limits (shape captured 2026-09-21; values synthetic — the three windows are the dashboard 'Usage Limits' meter)",
+  "data": {
+    "limits": [
+      {"type": "five_hour", "percentUsed": 0, "resetsAt": "2026-09-21T22:30:00.000Z"},
+      {"type": "weekly", "percentUsed": 60, "resetsAt": "2026-09-28T00:00:00.000Z"},
+      {"type": "monthly", "percentUsed": 85, "resetsAt": "2026-10-11T00:00:00.000Z"}
+    ]
+  },
+  "success": true
+}

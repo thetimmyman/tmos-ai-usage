@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-21T16:00:00.000Z","type":"session_meta","payload":{"id":"rollout-empty","cli_version":"0.155.0"}}
+{"timestamp":"2026-09-21T16:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"premium","limit_name":null,"primary":null,"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"}}}}

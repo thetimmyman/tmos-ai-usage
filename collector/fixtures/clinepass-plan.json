@@ -1,0 +1,22 @@
+{
+  "_source": "GET https://api.cline.bot/api/v1/users/me/plan -> data (shape captured 2026-09-21; values synthetic)",
+  "planHistoryId": "iph-fixture",
+  "plan": {
+    "name": "Cline Pass (Annual)[Internal]",
+    "displayName": "Cline Pass (Annual)",
+    "type": "individual",
+    "entitlements": {
+      "cline_pass": {
+        "enabled": true,
+        "inferenceCapThreshold": {
+          "last5HoursUsageCostUSDPerUser": 1000,
+          "last7daysUsageCostUSDPerUser": 2500,
+          "last30daysUsageCostUSDPerUser": 5000
+        }
+      }
+    },
+    "isActive": true
+  },
+  "currentPeriodStart": "2026-09-11T12:14:40Z",
+  "currentPeriodEnd": "2027-09-11T12:14:40Z"
+}

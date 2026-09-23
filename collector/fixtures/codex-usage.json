@@ -1,0 +1,12 @@
+{
+  "_source": "GET https://chatgpt.com/backend-api/wham/usage (shape captured 2026-09-21; values synthetic)",
+  "plan_type": "plus",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {"used_percent": 1, "limit_window_seconds": 18000, "reset_after_seconds": 852, "reset_at": 1790019260},
+    "secondary_window": {"used_percent": 100, "limit_window_seconds": 604800, "reset_after_seconds": 4855, "reset_at": 1790023263}
+  },
+  "additional_rate_limits": null,
+  "credits": {"has_credits": false, "unlimited": false, "balance": "0"}
+}

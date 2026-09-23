@@ -1,0 +1,8 @@
+{
+  "_source": "GET https://opencode.ai/zen/go/v1/usage (shape captured 2026-09-21; values synthetic)",
+  "usage": {
+    "rolling": {"status": "ok", "percent": 4, "resetsAt": "2026-09-21T22:30:00.000Z"},
+    "weekly": {"status": "ok", "percent": 12, "resetsAt": "2026-09-28T00:00:00.000Z"},
+    "monthly": {"status": "ok", "percent": 33, "resetsAt": "2026-10-14T04:00:00.000Z"}
+  }
+}

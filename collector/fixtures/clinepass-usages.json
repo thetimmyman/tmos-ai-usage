@@ -1,0 +1,10 @@
+{
+  "_source": "GET https://api.cline.bot/api/v1/users/<id>/usages -> data (shape captured 2026-09-21; values synthetic)",
+  "items": [
+    {"id": "usg-1", "createdAt": "2026-09-21T19:00:00.000000Z", "costUsd": 150, "operation": "chat_completion"},
+    {"id": "usg-2", "createdAt": "2026-09-21T17:00:00.000000Z", "costUsd": 100, "operation": "chat_completion"},
+    {"id": "usg-3", "createdAt": "2026-09-19T09:00:00.000000Z", "costUsd": 0, "operation": "chat_completion"}
+  ],
+  "nextToken": null,
+  "total": 0
+}

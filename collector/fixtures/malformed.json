@@ -1,0 +1,9 @@
+{
+  "_source": "negative control: a well-formed JSON document with none of the fields any collector expects",
+  "usage": "not-an-object",
+  "plan": 42,
+  "rate_limit": ["wrong", "shape"],
+  "five_hour": null,
+  "credits": "nope",
+  "windowLimits": 7
+}

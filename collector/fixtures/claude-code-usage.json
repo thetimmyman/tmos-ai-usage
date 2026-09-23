@@ -1,0 +1,7 @@
+{
+  "_source": "GET https://api.anthropic.com/api/oauth/usage (shape captured 2026-09-21; values synthetic)",
+  "five_hour": {"utilization": 23.0, "resets_at": "2026-09-21T22:30:00.000000+00:00", "limit_dollars": null},
+  "seven_day": {"utilization": 95.0, "resets_at": "2026-09-24T18:00:00.000000+00:00", "limit_dollars": null},
+  "seven_day_opus": null,
+  "extra_usage": {"is_enabled": false, "utilization": null}
+}
