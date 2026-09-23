@@ -1466,7 +1466,9 @@ STATS_SCANNERS = {
 NO_LOCAL_TRANSCRIPT: dict[str, str] = {}
 
 
-def stats_for(provider: str, now: datetime | None = None, reason: str | None = None) -> dict:
+def stats_for(
+    provider: str, now: datetime | None = None, reason: str | None = None
+) -> dict:
     """Local history for one provider, or an explicit "none" that names the reason.
 
     `reason` lets a caller that knows better explain itself: a definition-based provider has no
@@ -1525,12 +1527,23 @@ def stats_for(provider: str, now: datetime | None = None, reason: str | None = N
 DEFINITION_VERSION = 1
 DEFINITION_MAX_BYTES = 64 * 1024
 _DEF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
-_DOTTED_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_][A-Za-z0-9_-]*)*$")
+_DOTTED_RE = re.compile(
+    r"^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_][A-Za-z0-9_-]*)*$"
+)
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _RESET_FORMATS = ("iso", "epoch_s", "epoch_ms", "duration_s")
 # Keys that look like they hold a secret. Never legal anywhere in a definition.
 _SECRET_KEYS = frozenset(
-    {"token", "api_key", "apikey", "key", "secret", "password", "bearer", "authorization"}
+    {
+        "token",
+        "api_key",
+        "apikey",
+        "key",
+        "secret",
+        "password",
+        "bearer",
+        "authorization",
+    }
 )
 _HEADER_DENY = frozenset({"authorization", "cookie", "proxy-authorization"})
 _MISSING = object()
@@ -1631,7 +1644,11 @@ def definitions_dirs() -> list[Path]:
     """
     override = (os.environ.get("TMOS_USAGE_PROVIDERS_DIR") or "").strip()
     if override:
-        return [Path(os.path.expanduser(part)) for part in override.split(os.pathsep) if part]
+        return [
+            Path(os.path.expanduser(part))
+            for part in override.split(os.pathsep)
+            if part
+        ]
     return [
         Path(__file__).resolve().parent.parent / "providers.d",
         Path(os.path.expanduser("~/.config/tmos-ai-usage/providers.d")),
@@ -1688,7 +1705,7 @@ def _validate_window(raw: object, index: int) -> dict | str:
         reset_spec = {"path": path, "format": fmt}
 
     if kind in ("percent", "ratio"):
-        for key in (["path"] if kind == "percent" else ["used", "cap"]):
+        for key in ["path"] if kind == "percent" else ["used", "cap"]:
             value = _clean(raw.get(key))
             if value is None or not _DOTTED_RE.match(value):
                 return f"{where}.{key} must be a dotted path into the response"
@@ -1747,7 +1764,9 @@ def _validate_window(raw: object, index: int) -> dict | str:
     return spec
 
 
-def validate_definition(document: object, origin: str) -> tuple[dict | None, str | None]:
+def validate_definition(
+    document: object, origin: str
+) -> tuple[dict | None, str | None]:
     """Strict shape check of one `providers.d` file. Returns (spec, None) or (None, reason).
 
     Strict on purpose: an unknown key is an error, not something to skip. That is what makes
@@ -1789,7 +1808,9 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
     endpoint = document.get("endpoint")
     if not isinstance(endpoint, dict):
         return bad("`endpoint` must be an object")
-    extra = _def_extra_keys(endpoint, {"url", "base_url_env", "credential", "headers", "timeout_s"})
+    extra = _def_extra_keys(
+        endpoint, {"url", "base_url_env", "credential", "headers", "timeout_s"}
+    )
     if extra:
         return bad(_def_extra_message(extra, "endpoint"))
     url = _clean(endpoint.get("url"))
@@ -1800,12 +1821,15 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
         return bad(f"`endpoint.url` must be http(s); {scheme or 'that'} is not read")
     base_url_env = _clean(endpoint.get("base_url_env"))
     if base_url_env is not None and not _ENV_NAME_RE.match(base_url_env):
-        return bad(f"`endpoint.base_url_env` must be an env var name, got {base_url_env!r}")
+        return bad(
+            f"`endpoint.base_url_env` must be an env var name, got {base_url_env!r}"
+        )
     headers = endpoint.get("headers")
     if headers is None:
         headers = {}
     if not isinstance(headers, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) for key, value in headers.items()
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in headers.items()
     ):
         return bad("`endpoint.headers` must be an object of string values")
     denied = sorted(key for key in headers if key.lower() in _HEADER_DENY)
@@ -1815,7 +1839,11 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
             "name a credential instead"
         )
     timeout = endpoint.get("timeout_s", TIMEOUT_S)
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 30:
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0 < timeout <= 30
+    ):
         return bad("`endpoint.timeout_s` must be a number of seconds in (0, 30]")
 
     credential = endpoint.get("credential")
@@ -1832,7 +1860,9 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
             return bad(_def_extra_message(extra, "credential"))
         name = _clean(credential.get("name"))
         if name is None or not _ENV_NAME_RE.match(name):
-            return bad("credential kind `env` needs an uppercase env var name in `name`")
+            return bad(
+                "credential kind `env` needs an uppercase env var name in `name`"
+            )
         files = credential.get("files", [])
         if not isinstance(files, list) or not all(
             isinstance(item, str) and item.strip() for item in files
@@ -1852,8 +1882,12 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
         if path is None:
             return bad("credential kind `json_file` needs `path`")
         if field is None or not _DOTTED_RE.match(field):
-            return bad('credential kind `json_file` needs a dotted `field`')
-        resolved = {"kind": "json_file", "path": os.path.expanduser(path), "field": field}
+            return bad("credential kind `json_file` needs a dotted `field`")
+        resolved = {
+            "kind": "json_file",
+            "path": os.path.expanduser(path),
+            "field": field,
+        }
     else:
         return bad(f"unsupported credential kind {kind!r} (env | json_file | none)")
 
@@ -1894,7 +1928,9 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
             return bad("`balance.currency` must be a three-letter code")
         currency_path = _clean(balance.get("currency_path"))
         if currency_path is not None and not _DOTTED_RE.match(currency_path):
-            return bad("`balance.currency_path` must be a dotted path into the response")
+            return bad(
+                "`balance.currency_path` must be a dotted path into the response"
+            )
         estimated = balance.get("estimated", False)
         if not isinstance(estimated, bool):
             return bad("`balance.estimated` must be true or false")
@@ -1923,7 +1959,11 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
         "balance": balance_spec,
         "plan_path": plan_path,
     }, None
-def _definition_reset(reset_spec: dict | None, anchor: object, now: datetime) -> datetime | None:
+
+
+def _definition_reset(
+    reset_spec: dict | None, anchor: object, now: datetime
+) -> datetime | None:
     """The reset a window spec points at, in whichever of the four forms it named."""
     if not reset_spec:
         return None
@@ -1943,7 +1983,9 @@ def _definition_reset(reset_spec: dict | None, anchor: object, now: datetime) ->
     return now + timedelta(seconds=seconds) if seconds is not None else None
 
 
-def _definition_notes(item: object, status_path: str | None, name: str, notes: list[str]) -> None:
+def _definition_notes(
+    item: object, status_path: str | None, name: str, notes: list[str]
+) -> None:
     """A window the provider itself marked as throttled keeps that word, as parse_opencode does."""
     if not status_path:
         return
@@ -1959,7 +2001,9 @@ def _definition_window_name(wspec: dict, payload: dict) -> str | None:
     return wspec["window"]
 
 
-def _definition_rows(spec: dict, payload: dict, now: datetime) -> tuple[list[dict], list[str]]:
+def _definition_rows(
+    spec: dict, payload: dict, now: datetime
+) -> tuple[list[dict], list[str]]:
     """Map a response onto window rows. Every branch skips what it cannot read; nothing invented."""
     rows: list[dict] = []
     notes: list[str] = []
@@ -1973,7 +2017,9 @@ def _definition_rows(spec: dict, payload: dict, now: datetime) -> tuple[list[dic
             if name is None or name in seen or used is None:
                 continue
             seen.add(name)
-            rows.append(window(name, used, _definition_reset(wspec["reset"], payload, now), now))
+            rows.append(
+                window(name, used, _definition_reset(wspec["reset"], payload, now), now)
+            )
             continue
         if kind == "ratio":
             name = _definition_window_name(wspec, payload)
@@ -1983,7 +2029,12 @@ def _definition_rows(spec: dict, payload: dict, now: datetime) -> tuple[list[dic
                 continue
             seen.add(name)
             rows.append(
-                window(name, used / cap * 100.0, _definition_reset(wspec["reset"], payload, now), now)
+                window(
+                    name,
+                    used / cap * 100.0,
+                    _definition_reset(wspec["reset"], payload, now),
+                    now,
+                )
             )
             continue
         container = _dig(payload, wspec["from"])
@@ -2007,7 +2058,9 @@ def _definition_rows(spec: dict, payload: dict, now: datetime) -> tuple[list[dic
             if percent is None:
                 continue
             seen.add(name)
-            rows.append(window(name, percent, _definition_reset(wspec["reset"], item, now), now))
+            rows.append(
+                window(name, percent, _definition_reset(wspec["reset"], item, now), now)
+            )
             _definition_notes(item, wspec["status"], name, notes)
     return rows, notes
 
@@ -2021,8 +2074,12 @@ def _definition_balance(spec: dict, payload: dict) -> dict | None:
     if remaining is None:
         return None
     currency = bspec["currency"]
-    raw_currency = _dig(payload, bspec["currency_path"]) if bspec["currency_path"] else _MISSING
-    if isinstance(raw_currency, str) and re.match(r"^[A-Za-z]{3}$", raw_currency.strip()):
+    raw_currency = (
+        _dig(payload, bspec["currency_path"]) if bspec["currency_path"] else _MISSING
+    )
+    if isinstance(raw_currency, str) and re.match(
+        r"^[A-Za-z]{3}$", raw_currency.strip()
+    ):
         currency = raw_currency.strip().upper()
     out = {
         "remaining": round(remaining, 2),
@@ -2054,18 +2111,26 @@ def parse_definition(spec: dict, payload: object, now: datetime | None = None) -
     if not isinstance(payload, dict):
         out = unknown(
             spec["id"],
-            _definition_reason(spec, "the endpoint returned a JSON document that is not an object"),
+            _definition_reason(
+                spec, "the endpoint returned a JSON document that is not an object"
+            ),
         )
     else:
         rows, notes = _definition_rows(spec, payload, now)
         if not rows:
             out = unknown(
                 spec["id"],
-                _definition_reason(spec, "no configured window carried a number in the response"),
+                _definition_reason(
+                    spec, "no configured window carried a number in the response"
+                ),
             )
         else:
             out = record(
-                spec["id"], status="ok", windows=rows, note="; ".join(notes), observed_at=now
+                spec["id"],
+                status="ok",
+                windows=rows,
+                note="; ".join(notes),
+                observed_at=now,
             )
             if spec["plan_path"]:
                 raw_plan = _dig(payload, spec["plan_path"])
@@ -2103,17 +2168,28 @@ def resolve_credential(credential: dict) -> tuple[str | None, str | None]:
     if kind == "none":
         return None, None
     if kind == "env":
-        token = env_or_file_key(credential["name"], [Path(item) for item in credential["files"]])
+        token = env_or_file_key(
+            credential["name"], [Path(item) for item in credential["files"]]
+        )
         if not token:
             where = ", ".join(_display_path(Path(item)) for item in credential["files"])
-            return None, f"${credential['name']} is not set and is not in {where or 'any env file'}"
+            return (
+                None,
+                f"${credential['name']} is not set and is not in {where or 'any env file'}",
+            )
         return token, None
     document = read_json(Path(credential["path"]))
     if document is None:
-        return None, f"{_display_path(Path(credential['path']))} is missing or is not JSON"
+        return (
+            None,
+            f"{_display_path(Path(credential['path']))} is missing or is not JSON",
+        )
     value = _dig(document, credential["field"])
     if not isinstance(value, str) or not value.strip():
-        return None, f"{_display_path(Path(credential['path']))} carries no {credential['field']}"
+        return (
+            None,
+            f"{_display_path(Path(credential['path']))} carries no {credential['field']}",
+        )
     return value.strip(), None
 
 
@@ -2130,7 +2206,13 @@ def _definition_url(spec: dict) -> str:
     original = urllib.parse.urlsplit(spec["url"])
     replacement = urllib.parse.urlsplit(override)
     return urllib.parse.urlunsplit(
-        (replacement.scheme, replacement.netloc, original.path, original.query, original.fragment)
+        (
+            replacement.scheme,
+            replacement.netloc,
+            original.path,
+            original.query,
+            original.fragment,
+        )
     )
 
 
@@ -2191,7 +2273,9 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
             except (OSError, UnicodeDecodeError) as exc:
                 rows.append(
                     _def_row(
-                        error_id, origin, f"unreadable ({type(exc).__name__}) (see {origin})"
+                        error_id,
+                        origin,
+                        f"unreadable ({type(exc).__name__}) (see {origin})",
                     )
                 )
                 continue
@@ -2199,7 +2283,9 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
                 document = json.loads(raw)
             except ValueError as exc:
                 rows.append(
-                    _def_row(error_id, origin, f"not JSON ({_scrub(exc)}) (see {origin})")
+                    _def_row(
+                        error_id, origin, f"not JSON ({_scrub(exc)}) (see {origin})"
+                    )
                 )
                 continue
             spec, error = validate_definition(document, origin)
@@ -2230,6 +2316,8 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
                 )
             specs[provider_id] = spec
     return [specs[key] for key in sorted(specs)], rows
+
+
 # ------------------------------------------------------------------ collectors (I/O)
 
 
@@ -2531,7 +2619,9 @@ def collect_all(only: list[str] | None = None, *, local_stats: bool = True) -> d
     """
     providers = []
     now = _now()
-    definition_reason = "definition-based provider: TMOS reads no local transcript for it"
+    definition_reason = (
+        "definition-based provider: TMOS reads no local transcript for it"
+    )
     specs, definition_rows = load_definitions()
     for row in definition_rows:
         if only and row["provider"] not in only:
@@ -2622,7 +2712,9 @@ def _selftest() -> int:
     neither must anything else. The definition tests below point that variable at their own
     fixtures and restore it to this pinned value afterwards.
     """
-    os.environ["TMOS_USAGE_PROVIDERS_DIR"] = str(FIXTURES / "selftest-pinned-no-definitions")
+    os.environ["TMOS_USAGE_PROVIDERS_DIR"] = str(
+        FIXTURES / "selftest-pinned-no-definitions"
+    )
     failures: list[str] = []
     now = datetime(2026, 9, 21, 20, 0, 0, tzinfo=timezone.utc)
 
@@ -3222,10 +3314,13 @@ def _selftest() -> int:
     )
     check(
         "negative control: a malformed response shape -> unknown, never a fabricated window",
-        parse_definition(by_id["acme"], fx("malformed.json"), now)["status"] == "unknown",
+        parse_definition(by_id["acme"], fx("malformed.json"), now)["status"]
+        == "unknown",
         str(parse_definition(by_id["acme"], fx("malformed.json"), now)),
     )
-    absent = collect_definition(reject_by_id["absent"]) if "absent" in reject_by_id else {}
+    absent = (
+        collect_definition(reject_by_id["absent"]) if "absent" in reject_by_id else {}
+    )
     check(
         "negative control: a credential that is not there -> unauthenticated, and it says which",
         absent.get("status") == "unauthenticated"
@@ -3294,7 +3389,9 @@ def _window_names(spec: dict) -> list[str]:
     return names
 
 
-def _list_providers(specs: list[dict], definition_rows: list[dict], as_json: bool) -> int:
+def _list_providers(
+    specs: list[dict], definition_rows: list[dict], as_json: bool
+) -> int:
     """Everything TMOS would collect, and where each one comes from. Never touches the network.
 
     This is the command a user runs while writing a definition: a definition that cannot be used
@@ -3360,7 +3457,9 @@ def _list_providers(specs: list[dict], definition_rows: list[dict], as_json: boo
 
 def _print_probe(row: dict) -> None:
     """What was read, in the shape the collector stores it: a reason where a number is missing."""
-    print(f"status:     {row['status']}" + (f"  ({row['note']})" if row["note"] else ""))
+    print(
+        f"status:     {row['status']}" + (f"  ({row['note']})" if row["note"] else "")
+    )
     if row.get("plan"):
         print(f"plan:       {row['plan']}")
     for item in row["windows"]:
@@ -3379,7 +3478,9 @@ def _print_probe(row: dict) -> None:
     if isinstance(balance, dict):
         funded = f" of {balance['funded']}" if "funded" in balance else ""
         tail = " (estimated)" if balance.get("estimated") else ""
-        print(f"balance     {balance['remaining']}{funded} {balance.get('currency', 'USD')}{tail}")
+        print(
+            f"balance     {balance['remaining']}{funded} {balance.get('currency', 'USD')}{tail}"
+        )
 
 
 def _probe(
@@ -3392,7 +3493,9 @@ def _probe(
     """
     spec = next((item for item in specs if item["id"] == provider_id), None)
     if spec is None and provider_id not in COLLECTORS:
-        broken = next((row for row in definition_rows if row["provider"] == provider_id), None)
+        broken = next(
+            (row for row in definition_rows if row["provider"] == provider_id), None
+        )
         if broken is None:
             print(
                 f"no provider {provider_id!r}; --list-providers shows what there is",
@@ -3417,7 +3520,9 @@ def _probe(
         try:
             row = collect_definition(spec)
         except urllib.error.HTTPError as exc:
-            row = _definition_failure(spec, f"HTTP {exc.code} from the endpoint", "unknown")
+            row = _definition_failure(
+                spec, f"HTTP {exc.code} from the endpoint", "unknown"
+            )
         except urllib.error.URLError as exc:
             row = _definition_failure(
                 spec, f"network unreachable ({type(exc.reason).__name__})", "unknown"
@@ -3450,7 +3555,9 @@ def main(argv: list[str] | None = None) -> int:
         "--once", action="store_true", help="collect once and write the cache"
     )
     ap.add_argument(
-        "--json", action="store_true", help="print the document (or the probe) on stdout"
+        "--json",
+        action="store_true",
+        help="print the document (or the probe) on stdout",
     )
     ap.add_argument(
         "--only",
