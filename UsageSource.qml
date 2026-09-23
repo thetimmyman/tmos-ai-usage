@@ -23,14 +23,18 @@ import "Model.js" as Model
 Item {
     id: root
 
+    // The plugin's own state, and the collector that ships beside this file: both resolve from this
+    // file's location or from HOME, so the widget is correct whether the plugin was installed by
+    // `omarchy plugin add` or is running from a checkout.
     readonly property string stateDir: {
-        var dir = Quickshell.env("TMOS_STATE_DIR");
-        return (dir && dir.length > 0) ? dir : (Quickshell.env("HOME") + "/.local/state/tmos");
+        var override = Quickshell.env("TMOS_USAGE_STATE_DIR");
+        return (override && override.length > 0) ? override : (Quickshell.env("HOME") + "/.local/state/tmos-ai-usage");
     }
     readonly property string cachePath: stateDir + "/usage.json"
     readonly property string collectorPath: {
         var override = Quickshell.env("TMOS_USAGE_COLLECTOR");
-        return (override && override.length > 0) ? override : (Quickshell.env("HOME") + "/.config/tmos/usage_collector.py");
+        if (override && override.length > 0) return override;
+        return Qt.resolvedUrl("collector/usage_collector.py").toString().replace(/^file:\/\//, "");
     }
 
     property var providers: []
@@ -60,7 +64,7 @@ Item {
         if (root.refreshing || collector.running) return;
         root.refreshing = true;
         root.refreshError = "";
-        collector.command = ["python3", root.collectorPath, "--once"];
+        collector.command = ["python3", root.collectorPath, "--once", "--state-dir", root.stateDir];
         collector.running = true;
     }
 

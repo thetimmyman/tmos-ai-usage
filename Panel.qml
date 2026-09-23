@@ -232,7 +232,7 @@ Ui.Panel {
                         width: parent.width
                         visible: root.providers.length === 0
                         textFormat: Text.PlainText
-                        text: "No collector output yet. Install the 5-minute timer:\n  tools/tmosd-service.sh usage install"
+                        text: "No reading yet. The collector runs a few seconds after the shell starts, then every five minutes — press R to refresh now."
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall

@@ -57,9 +57,10 @@ read is absent, not guessed; a number it derived is labelled `estimate` and says
 omarchy plugin add https://github.com/thetimmyman/tmos-ai-usage --enable
 ```
 
-> **Pre-release status.** The bundled collector and its scheduler (`Service.qml`) are not wired up
-> yet: until they land, this plugin needs the collector installed separately and reads
-> `~/.local/state/tmos/usage.json`. The install command above becomes correct at the first release.
+On install the collector starts within a few seconds and runs every five minutes after that. Its
+cache is `~/.local/state/tmos-ai-usage/usage.json`; the panel reads that file and never makes a
+network request of its own. `TMOS_USAGE_STATE_DIR` moves both halves if you want the state
+elsewhere.
 
 ## Configure
 
@@ -86,6 +87,8 @@ omarchy bar move tmos.usage --section right
 - **`j` / `k`** move through the rows, **Enter** opens the selected one, **`r`** refreshes,
   **Escape** closes, **Tab** moves to the neighbouring panel.
 - **Right-click or middle-click** the bar icon to refresh immediately.
+- **Keybinding**: `omarchy-shell shell summon tmos.usage '{}'` opens the panel and
+  `omarchy-shell shell hide tmos.usage` closes it.
 
 ## Privacy
 

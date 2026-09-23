@@ -5,12 +5,14 @@
   "version": "0.1.0",
   "author": "Timothy DeFreest",
   "license": "MIT",
+  "homepage": "https://github.com/thetimmyman/tmos-ai-usage",
   "description": "Every AI subscription and API plan on the machine in one bar panel: rate-limit windows with reset times, prepaid balances, and local token history by day and by model. Reads the CLIs' own credentials and transcripts, read-only.",
   "kinds": [
+    "service",
     "bar-widget"
   ],
-  "keepLoaded": false,
   "entryPoints": {
+    "service": "Service.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
@@ -71,5 +73,6 @@
         "defaultValue": 5
       }
     ]
-  }
+  },
+  "keepLoaded": false
 }

@@ -97,10 +97,32 @@ SCHEMA_VERSION = 2
 TIMEOUT_S = 8.0
 USER_AGENT = "tmos-usage-collector/0.1 (+shell/plugins/tmos.usage)"
 
-STATE_DIR = Path(
-    os.environ.get("TMOS_STATE_DIR", os.path.expanduser("~/.local/state/tmos"))
-)
+def _default_state_dir() -> Path:
+    """Where the cache lives.
+
+    The plugin ships its own collector, so the default is the plugin's own state directory: nothing
+    depends on a TMOS checkout being present, and removing the plugin can take the state with it.
+    `TMOS_USAGE_STATE_DIR` overrides it; `TMOS_STATE_DIR` is still honoured for the TMOS monorepo's
+    own gate, which points the collector at a scratch directory.
+    """
+    for name in ("TMOS_USAGE_STATE_DIR", "TMOS_STATE_DIR"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return Path(os.path.expanduser(value))
+    return Path(os.path.expanduser("~/.local/state/tmos-ai-usage"))
+
+
+STATE_DIR = _default_state_dir()
 CACHE_PATH = STATE_DIR / "usage.json"
+
+
+def configure_paths(state_dir: str | None = None) -> Path:
+    """Re-point the cache for `--state-dir`. One writer, one path, chosen once per run."""
+    global STATE_DIR, CACHE_PATH
+    if state_dir:
+        STATE_DIR = Path(os.path.expanduser(state_dir))
+        CACHE_PATH = STATE_DIR / "usage.json"
+    return CACHE_PATH
 
 WINDOW_ORDER = {"5h": 0, "week": 1, "month": 2}
 
@@ -250,6 +272,11 @@ def unknown(
     return record(provider, status=status, source=source, note=str(reason))
 
 
+# One opener for the whole process. `build_opener()` installs the default handlers — redirects
+# included — so this behaves exactly as `urlopen` does, with a single audited call site.
+_OPENER = urllib.request.build_opener()
+
+
 def http_json(
     url: str,
     token: str | None = None,
@@ -277,7 +304,7 @@ def http_json(
         hdrs["Authorization"] = "Bearer " + token
     hdrs.update(headers or {})
     req = urllib.request.Request(url, headers=hdrs, method="GET")  # nosec B310 - scheme checked above
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - scheme checked above
+    with _OPENER.open(req, timeout=timeout) as resp:
         body = resp.read().decode("utf-8")
     try:
         return json.loads(body)
@@ -1876,6 +1903,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--selftest", action="store_true", help="parse fixtures offline; no network"
     )
+    ap.add_argument(
+        "--state-dir",
+        default=None,
+        help="write the cache here instead of the plugin's own state directory",
+    )
     args = ap.parse_args(argv)
 
     if args.selftest:
@@ -1885,7 +1917,7 @@ def main(argv: list[str] | None = None) -> int:
 
     document = collect_all(args.only, local_stats=not args.no_stats)
     try:
-        write_cache(document)
+        write_cache(document, configure_paths(args.state_dir))
     except OSError as exc:
         print(f"warning: could not write {CACHE_PATH}: {_scrub(exc)}", file=sys.stderr)
     if args.json:
