@@ -1177,7 +1177,9 @@ def _command_code_contribution(path: Path, now: datetime) -> dict:
                 "cache_write_tokens": _num(usage.get("cacheWriteTokens")) or 0,
             }
             bucket["total_tokens"] = _int(sum(bucket.values()))
-            stats.add_tokens(when, session, row.get("model"), bucket, bucket["total_tokens"])
+            stats.add_tokens(
+                when, session, row.get("model"), bucket, bucket["total_tokens"]
+            )
         if str(message.get("role")) == "user":
             stats.add_prompt(when, session)
     return {"days": stats.days, "models": stats.models}
@@ -1257,7 +1259,9 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
             model = payload.get("modelID")
             if not isinstance(model, str) or not model:
                 raw_model = payload.get("model")
-                model = raw_model.get("modelID") if isinstance(raw_model, dict) else None
+                model = (
+                    raw_model.get("modelID") if isinstance(raw_model, dict) else None
+                )
             if tokens is not None:
                 raw_cache = tokens.get("cache")
                 cache = raw_cache if isinstance(raw_cache, dict) else {}
@@ -1343,7 +1347,9 @@ def _cline_contribution(path: Path, now: datetime) -> dict:
     bucket["total_tokens"] = _int(sum(bucket.values()))
     stats = _Stats("")
     session = str(document.get("session_id") or path.stem)
-    stats.add_tokens(when, session, document.get("model"), bucket, bucket["total_tokens"])
+    stats.add_tokens(
+        when, session, document.get("model"), bucket, bucket["total_tokens"]
+    )
     return {"days": stats.days, "models": stats.models}
 
 
@@ -1924,7 +1930,11 @@ def _selftest() -> int:
         target = Path(tempfile.mkdtemp(prefix="tmos-usage-fixture-")) / provider
         target.mkdir(parents=True)
         source = transcripts / provider
-        for path in [source / only] if only else sorted(p for p in source.glob("*") if p.is_file()):
+        for path in (
+            [source / only]
+            if only
+            else sorted(p for p in source.glob("*") if p.is_file())
+        ):
             shutil.copy2(path, target / path.name)
             os.utime(target / path.name, (now.timestamp(), now.timestamp()))
         scratch.append(target.parent)
@@ -1981,30 +1991,45 @@ def _selftest() -> int:
         str(codex["models"]),
     )
 
-    command = _command_code_contribution(transcripts / "command-code" / "aaaa-bbbb.jsonl", now)
+    command = _command_code_contribution(
+        transcripts / "command-code" / "aaaa-bbbb.jsonl", now
+    )
     command_tokens = sum(row["tokens"] for row in command["days"].values())
-    check("command-code rollout: reply usage summed, prompts counted from user rows",
-          command_tokens == 1820
-          and sum(row["prompts"] for row in command["days"].values()) == 1,
-          str(command))
-    check("command-code rollout: input/output/cache buckets stay separate",
-          command["models"]["deepseek/deepseek-v4-flash"]["input_tokens"] == 1200
-          and command["models"]["deepseek/deepseek-v4-flash"]["cache_read_tokens"] == 500
-          and command["models"]["deepseek/deepseek-v4-flash"]["total_tokens"] == 1820,
-          str(command["models"]))
-    check("negative control: a checkpoints file contributes no day and no model",
-          _command_code_contribution(
-              transcripts / "command-code" / "aaaa-bbbb.checkpoints.jsonl", now
-          ) == {"days": {}, "models": {}}, "")
+    check(
+        "command-code rollout: reply usage summed, prompts counted from user rows",
+        command_tokens == 1820
+        and sum(row["prompts"] for row in command["days"].values()) == 1,
+        str(command),
+    )
+    check(
+        "command-code rollout: input/output/cache buckets stay separate",
+        command["models"]["deepseek/deepseek-v4-flash"]["input_tokens"] == 1200
+        and command["models"]["deepseek/deepseek-v4-flash"]["cache_read_tokens"] == 500
+        and command["models"]["deepseek/deepseek-v4-flash"]["total_tokens"] == 1820,
+        str(command["models"]),
+    )
+    check(
+        "negative control: a checkpoints file contributes no day and no model",
+        _command_code_contribution(
+            transcripts / "command-code" / "aaaa-bbbb.checkpoints.jsonl", now
+        )
+        == {"days": {}, "models": {}},
+        "",
+    )
 
     command_tree = staged("command-code")
-    command_stats = scan_command_code_stats(now, command_tree, command_tree.parent / "state")
-    check("command-code scan: end-to-end history from a rollout tree",
-          command_stats["available"] and command_stats["totals"]["tokens"] == 1820
-          and command_stats["totals"]["prompts"] == 1
-          and command_stats["totals"]["sessions"] == 1
-          and command_stats["models"][0]["id"] == "deepseek/deepseek-v4-flash",
-          str(command_stats))
+    command_stats = scan_command_code_stats(
+        now, command_tree, command_tree.parent / "state"
+    )
+    check(
+        "command-code scan: end-to-end history from a rollout tree",
+        command_stats["available"]
+        and command_stats["totals"]["tokens"] == 1820
+        and command_stats["totals"]["prompts"] == 1
+        and command_stats["totals"]["sessions"] == 1
+        and command_stats["models"][0]["id"] == "deepseek/deepseek-v4-flash",
+        str(command_stats),
+    )
 
     # OpenCode keeps its sessions in SQLite. The fixture is built here rather than committed as a
     # binary blob, so the reader is proven against the real table shape.
@@ -2044,42 +2069,75 @@ def _selftest() -> int:
     )
     con.execute(
         "INSERT INTO message VALUES (?,?,?,?,?)",
-        ("m3", "ses_1", stamp, stamp, json.dumps({"role": "assistant", "tokens": None})),
+        (
+            "m3",
+            "ses_1",
+            stamp,
+            stamp,
+            json.dumps({"role": "assistant", "tokens": None}),
+        ),
     )
     con.commit()
     con.close()
     opencode = scan_opencode_stats(now, opencode_db, opencode_db.parent / "state")
-    check("opencode: the provider's own token total is used, not re-derived",
-          opencode["available"] and opencode["totals"]["tokens"] == 11882, str(opencode))
-    check("opencode: user rows are prompts, and a reply with no tokens invents nothing",
-          opencode["totals"]["prompts"] == 1 and opencode["totals"]["active_days"] == 1,
-          str(opencode))
-    check("opencode: model and cache buckets read from the message payload",
-          opencode["models"][0]["id"] == "gpt-5-nano"
-          and opencode["models"][0]["cache_read_tokens"] == 100,
-          str(opencode["models"]))
-    check("opencode: a second read of an unchanged database is served from the cache",
-          scan_opencode_stats(now, opencode_db, opencode_db.parent / "state")["scan"]["files_cached"] == 1,
-          "the WAL-aware signature must stay stable across reads")
+    check(
+        "opencode: the provider's own token total is used, not re-derived",
+        opencode["available"] and opencode["totals"]["tokens"] == 11882,
+        str(opencode),
+    )
+    check(
+        "opencode: user rows are prompts, and a reply with no tokens invents nothing",
+        opencode["totals"]["prompts"] == 1 and opencode["totals"]["active_days"] == 1,
+        str(opencode),
+    )
+    check(
+        "opencode: model and cache buckets read from the message payload",
+        opencode["models"][0]["id"] == "gpt-5-nano"
+        and opencode["models"][0]["cache_read_tokens"] == 100,
+        str(opencode["models"]),
+    )
+    check(
+        "opencode: a second read of an unchanged database is served from the cache",
+        scan_opencode_stats(now, opencode_db, opencode_db.parent / "state")["scan"][
+            "files_cached"
+        ]
+        == 1,
+        "the WAL-aware signature must stay stable across reads",
+    )
 
-    cline = _cline_contribution(transcripts / "clinepass" / "1790017816235_k9ukm.json", now)
+    cline = _cline_contribution(
+        transcripts / "clinepass" / "1790017816235_k9ukm.json", now
+    )
     cline_tokens = sum(row["tokens"] for row in cline["days"].values())
-    check("cline session: the usage rollup is taken once, not summed with its aggregate twin",
-          cline_tokens == 5749, f"got {cline_tokens}; summing usage + aggregateUsage would give 11498")
-    check("cline session: model named, and no prompt count is claimed for a field it lacks",
-          cline["models"]["deepseek-v4.1-flash"]["total_tokens"] == 5749
-          and not any(row["prompts"] for row in cline["days"].values()), str(cline))
-    check("negative control: a Cline transcript file contributes nothing, so nothing double counts",
-          _cline_contribution(
-              transcripts / "clinepass" / "1790017816235_k9ukm.messages.json", now
-          ) == {"days": {}, "models": {}}, "")
+    check(
+        "cline session: the usage rollup is taken once, not summed with its aggregate twin",
+        cline_tokens == 5749,
+        f"got {cline_tokens}; summing usage + aggregateUsage would give 11498",
+    )
+    check(
+        "cline session: model named, and no prompt count is claimed for a field it lacks",
+        cline["models"]["deepseek-v4.1-flash"]["total_tokens"] == 5749
+        and not any(row["prompts"] for row in cline["days"].values()),
+        str(cline),
+    )
+    check(
+        "negative control: a Cline transcript file contributes nothing, so nothing double counts",
+        _cline_contribution(
+            transcripts / "clinepass" / "1790017816235_k9ukm.messages.json", now
+        )
+        == {"days": {}, "models": {}},
+        "",
+    )
 
     cline_tree = staged("clinepass")
     cline_stats = scan_cline_stats(now, cline_tree, cline_tree.parent / "state")
-    check("cline scan: end-to-end history from a session directory",
-          cline_stats["available"] and cline_stats["totals"]["tokens"] == 5749
-          and cline_stats["totals"]["sessions"] == 1,
-          str(cline_stats))
+    check(
+        "cline scan: end-to-end history from a session directory",
+        cline_stats["available"]
+        and cline_stats["totals"]["tokens"] == 5749
+        and cline_stats["totals"]["sessions"] == 1,
+        str(cline_stats),
+    )
 
     codex_tree = staged("codex")
     limits = codex_local_rate_limits(now, codex_tree)
@@ -2162,7 +2220,6 @@ def _selftest() -> int:
         and not unreadable["models"],
         str(unreadable),
     )
-
 
     for path in scratch:
         try:
