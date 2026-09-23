@@ -1755,7 +1755,9 @@ def validate_definition(document: object, origin: str) -> tuple[dict | None, str
     """
 
     def bad(reason: str) -> tuple[None, str]:
-        return None, f"definition {origin}: {reason}"
+        # The reason leads and the file trails: `load_definitions` appends the location, because
+        # `_scrub` caps a note at 180 characters and a long install path must never eat the message.
+        return None, reason
 
     if not isinstance(document, dict):
         return bad("not a JSON object")
@@ -2041,7 +2043,9 @@ def _definition_reason(spec: dict, reason: str) -> str:
     named in a reason is redacted when its name runs to 24 characters or more. Naming the file
     first keeps the reason actionable either way.
     """
-    return f"definition {spec['origin']}: {reason}"
+    # Reason first, location last. `_scrub` truncates a note at 180 characters, so a long install
+    # path at the tail can only ever clip the file, never the explanation.
+    return f"{reason} (see {spec['origin']})"
 
 
 def parse_definition(spec: dict, payload: object, now: datetime | None = None) -> dict:
@@ -2179,7 +2183,7 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
                         _def_row(
                             error_id,
                             origin,
-                            f"definition {origin}: larger than {DEFINITION_MAX_BYTES} bytes",
+                            f"larger than {DEFINITION_MAX_BYTES} bytes; not read (see {origin})",
                         )
                     )
                     continue
@@ -2187,7 +2191,7 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
             except (OSError, UnicodeDecodeError) as exc:
                 rows.append(
                     _def_row(
-                        error_id, origin, f"definition {origin}: unreadable ({type(exc).__name__})"
+                        error_id, origin, f"unreadable ({type(exc).__name__}) (see {origin})"
                     )
                 )
                 continue
@@ -2195,12 +2199,13 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
                 document = json.loads(raw)
             except ValueError as exc:
                 rows.append(
-                    _def_row(error_id, origin, f"definition {origin}: not JSON ({_scrub(exc)})")
+                    _def_row(error_id, origin, f"not JSON ({_scrub(exc)}) (see {origin})")
                 )
                 continue
             spec, error = validate_definition(document, origin)
             if spec is None:
-                rows.append(_def_row(error_id, origin, error or f"definition {origin}: invalid"))
+                reason = error or "invalid definition"
+                rows.append(_def_row(error_id, origin, f"{reason} (see {origin})"))
                 continue
             provider_id = spec["id"]
             if provider_id in COLLECTORS:
@@ -2208,8 +2213,8 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
                     _def_row(
                         error_id,
                         origin,
-                        f"definition {origin}: ignored — the built-in adapter {provider_id!r} "
-                        "wins on an id collision",
+                        f"ignored — the built-in adapter {provider_id!r} wins on an id "
+                        f"collision (see {origin})",
                     )
                 )
                 continue
@@ -2219,8 +2224,8 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
                     _def_row(
                         _definition_error_id(Path(holder["origin"])),
                         holder["origin"],
-                        f"definition {holder['origin']}: ignored — {origin} defines id "
-                        f"{provider_id!r} later and wins",
+                        f"ignored — a definition read later defines id {provider_id!r} and "
+                        f"wins (see {holder['origin']})",
                     )
                 )
             specs[provider_id] = spec
@@ -3225,8 +3230,21 @@ def _selftest() -> int:
         "negative control: a credential that is not there -> unauthenticated, and it says which",
         absent.get("status") == "unauthenticated"
         and "ABSENT_PROVIDER_API_KEY" in absent.get("note", "")
-        and absent.get("note", "").startswith("definition "),
+        and absent.get("definition", "").endswith("missing-credential.json"),
         str(absent),
+    )
+    # The reason has to survive the scrubber. `_scrub` caps a note at 180 characters, and the
+    # plugin's install path is longer than a checkout's, so a reason that trails its message behind
+    # a path loses the message exactly where a user needs it most.
+    long_origin = "~/" + "d" * 90 + "/providers.d/inline-secret.json"
+    trimmed = _scrub(
+        "unsupported key 'token': a definition names a credential, it never inlines one "
+        f"(see {long_origin})"
+    )
+    check(
+        "definitions: a reason leads with the message, so a long install path cannot eat it",
+        "never inlines one" in trimmed and len(trimmed) <= 180,
+        trimmed,
     )
 
     # A definition is a provider end to end, not only inside the mapping: `--only` selects it, the
