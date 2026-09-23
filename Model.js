@@ -85,7 +85,9 @@ function normalizeProvider(rawRow, observedAtMs) {
   status = String(row.status || "unknown")
   return {
     id: id,
-    name: PROVIDER_LABEL[id] || id,
+    // A definition-based provider carries its own display name; a built-in never does, so this
+    // leaves every built-in row exactly as it was and lets a definition name itself properly.
+    name: PROVIDER_LABEL[id] || (row.label ? String(row.label) : id),
     plan: row.plan ? String(row.plan) : "",
     source: String(row.source || ""),
     status: status,

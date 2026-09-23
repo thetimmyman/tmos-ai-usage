@@ -1,0 +1,14 @@
+{
+  "_source": "negative control: names a mapping the format does not implement. Validation must reject it by name, not ignore the window and quietly report nothing.",
+  "definition_version": 1,
+  "id": "unsupported",
+  "label": "Unsupported",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/graphql",
+    "credential": {"kind": "none"},
+    "timeout_s": 1
+  },
+  "windows": [
+    {"kind": "graphql", "query": "{ usage { percent } }", "window": "5h"}
+  ]
+}

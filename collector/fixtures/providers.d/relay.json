@@ -1,0 +1,26 @@
+{
+  "_source": "example definition: a provider that names each window by its LENGTH in seconds rather than by name, and expresses its reset only as 'in N seconds'.",
+  "definition_version": 1,
+  "id": "relay",
+  "label": "Relay",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/wham/usage",
+    "credential": {"kind": "none"},
+    "timeout_s": 1
+  },
+  "plan_path": "plan_type",
+  "windows": [
+    {
+      "kind": "percent",
+      "path": "rate_limit.primary_window.used_percent",
+      "window_from_duration": "rate_limit.primary_window.limit_window_seconds",
+      "reset": {"path": "rate_limit.primary_window.reset_after_seconds", "format": "duration_s"}
+    },
+    {
+      "kind": "percent",
+      "path": "rate_limit.secondary_window.used_percent",
+      "window_from_duration": "rate_limit.secondary_window.limit_window_seconds",
+      "reset": {"path": "rate_limit.secondary_window.reset_after_seconds", "format": "duration_s"}
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "_source": "the response fixtures/providers.d/quarry.json maps (shape modelled on Cline's /users/me/plan/usage-limits; values synthetic)",
+  "success": true,
+  "data": {
+    "limits": [
+      {"type": "five_hour", "percentUsed": 0, "resetsAt": "2026-09-21T22:30:00.000Z"},
+      {"type": "weekly", "percentUsed": 60, "resetsAt": "2026-09-28T00:00:00.000Z"},
+      {"type": "monthly", "percentUsed": 85, "resetsAt": "2026-10-11T00:00:00.000Z"}
+    ]
+  }
+}

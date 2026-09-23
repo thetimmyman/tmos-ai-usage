@@ -1,0 +1,21 @@
+{
+  "_source": "example definition: an ARRAY of limits, each selected by one of its own fields, rather than an object keyed by window name.",
+  "definition_version": 1,
+  "id": "quarry",
+  "label": "Quarry",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/api/v1/users/me/plan/usage-limits",
+    "credential": {"kind": "none"},
+    "timeout_s": 1
+  },
+  "windows": [
+    {
+      "kind": "list",
+      "from": "data.limits",
+      "by": "type",
+      "keys": {"five_hour": "5h", "weekly": "week", "monthly": "month"},
+      "percent": "percentUsed",
+      "reset": {"path": "resetsAt", "format": "iso"}
+    }
+  ]
+}

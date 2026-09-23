@@ -1,0 +1,14 @@
+{
+  "_source": "negative control: this id is already a built-in adapter. The built-in always wins, and the definition must be reported rather than silently dropped.",
+  "definition_version": 1,
+  "id": "codex",
+  "label": "Codex (as data)",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/wham/usage",
+    "credential": {"kind": "none"},
+    "timeout_s": 1
+  },
+  "windows": [
+    {"kind": "percent", "window": "5h", "path": "used_percent"}
+  ]
+}

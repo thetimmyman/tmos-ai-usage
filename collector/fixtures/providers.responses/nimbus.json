@@ -1,0 +1,7 @@
+{
+  "_source": "the response fixtures/providers.d/nimbus.json maps (shape modelled on Command Code's /alpha/billing/credits; values synthetic)",
+  "windowLimits": {
+    "limited": true,
+    "weekly": {"used": 9.8, "cap": 35, "exceeded": false, "resetAt": 1790280000000}
+  }
+}

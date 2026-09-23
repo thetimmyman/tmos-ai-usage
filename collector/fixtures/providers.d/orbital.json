@@ -1,0 +1,21 @@
+{
+  "_source": "example definition: one object keyed by the provider's own window names, with a per-window status word TMOS must not swallow.",
+  "definition_version": 1,
+  "id": "orbital",
+  "label": "Orbital",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/usage",
+    "credential": {"kind": "none"},
+    "timeout_s": 1
+  },
+  "windows": [
+    {
+      "kind": "map",
+      "from": "usage",
+      "keys": {"rolling": "5h", "weekly": "week", "monthly": "month"},
+      "percent": "percent",
+      "reset": {"path": "resetsAt", "format": "iso"},
+      "status": "status"
+    }
+  ]
+}

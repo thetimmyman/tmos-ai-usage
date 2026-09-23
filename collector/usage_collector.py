@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """tools/usage_collector.py — one honest picture of how much AI subscription is left.
 
-Five providers, five first-party sources, one merged document under the tmosd state path
-(`~/.local/state/tmos/usage.json`, atomic write). The shell plugin `shell/plugins/tmos.usage`
+Five built-in providers, five first-party sources, and any provider you define as data, in one
+merged document under the tmosd state path (`~/.local/state/tmos/usage.json`, atomic write). The
+shell plugin `shell/plugins/tmos.usage`
 reads that file and does no network of its own (Omarchy-native rule N-series: a plugin displays,
 a collector observes).
 
@@ -14,6 +15,8 @@ Per-provider record (the contract the QML reads):
      "observed_at": "...Z", "status": "ok|estimate|unauthenticated|unknown|error", "note": "...",
      "balance": {"remaining": 12.34, "funded": 20.0, "spent": 7.66, "currency": "USD",
                  "estimated": true},                             # prepaid providers only
+     "label": "Acme AI",                             # definition providers only: the display name
+     "definition": "~/.config/tmos-ai-usage/providers.d/acme.json",   # where a definition came from
      "stats": {"available": true, "source": "~/.claude/projects", "coverage_days": 30,
                "daily": [{"date": "2026-09-22", "tokens": 36250589, "prompts": 12,
                           "sessions": 3}],                      # whole window, oldest first
@@ -30,7 +33,7 @@ empty chart and never a fabricated zero.
 
 Document level:
 
-    {"schema_version": 2, "observed_at": "...Z", "providers": [...],
+    {"schema_version": 3, "observed_at": "...Z", "providers": [...],
      "totals": {"tokens_today": 0, "tokens_7d": 0, "providers_reported": 5,
                 "providers_with_limits": 5, "providers_with_stats": 2}}
 
@@ -43,6 +46,10 @@ Rules this file keeps (they are the whole point):
   * Nothing is invented. A number TMOS cannot source is absent, not guessed; a number TMOS
     derives (the ClinePass fallback, Command Code's monthly) says so in `note` and, where the
     derivation is not the provider's own arithmetic, in `status`.
+  * A provider can also be *data*: a validated `providers.d/*.json` definition, written without
+    touching this file. Built-in adapters always win their id, and a definition that is malformed,
+    incomplete, or names a credential that is not there appears in the document anyway — non-ok,
+    with a one-line reason — rather than quietly producing nothing.
   * Local history comes from each CLI's own transcripts, read once per file and cached under the
     state dir (`stats-cache.json`): the transcript tree is ~440 MB here and this runs on a 5-minute
     timer, so an unchanged file is never parsed twice. See "Local stats" below.
@@ -71,10 +78,21 @@ Where each number comes from (read from the installed clients, not guessed — s
                 (~/.codex/auth.json). Reports "unauthenticated" with a `codex login` hint when
                 that file holds no token.
 
+  plus any provider you define as data: `providers.d/*.json`, one endpoint and one JSON document
+  mapped onto the same windows/balance contract. The plugin ships none — the five above stay code
+  on purpose, because each needs something this format cannot express (a second endpoint,
+  pagination, an OAuth refresh, a plan lookup table, a local fallback, or local history). See
+  "provider definitions" below for what a definition may say, and README.md for the same split as
+  a table.
+
 Usage:
   tools/usage_collector.py --once            collect once, write the cache
   tools/usage_collector.py --once --json     collect once, write the cache, print the document
   tools/usage_collector.py --once --no-stats limits only, skipping the local transcript scan
+  tools/usage_collector.py --list-providers  every provider TMOS would collect and where it comes
+                                             from; no network
+  tools/usage_collector.py --probe <id>      read one provider now and show what came back and
+                                             where it came from
   tools/usage_collector.py --selftest        parse fixtures offline (no network), incl. a
                                              malformed one that must degrade to "unknown"
 """
@@ -94,7 +112,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 TIMEOUT_S = 8.0
 USER_AGENT = "tmos-usage-collector/0.1 (+shell/plugins/tmos.usage)"
 
@@ -1448,12 +1466,16 @@ STATS_SCANNERS = {
 NO_LOCAL_TRANSCRIPT: dict[str, str] = {}
 
 
-def stats_for(provider: str, now: datetime | None = None) -> dict:
-    """Local history for one provider, or an explicit "none" that names the reason."""
+def stats_for(provider: str, now: datetime | None = None, reason: str | None = None) -> dict:
+    """Local history for one provider, or an explicit "none" that names the reason.
+
+    `reason` lets a caller that knows better explain itself: a definition-based provider has no
+    transcript reader by construction, and saying so is more useful than "no local transcript".
+    """
     scanner = STATS_SCANNERS.get(provider)
     if scanner is None:
         return _no_stats(
-            "", {}, NO_LOCAL_TRANSCRIPT.get(provider, "no local transcript")
+            "", {}, reason or NO_LOCAL_TRANSCRIPT.get(provider, "no local transcript")
         )
     try:
         return scanner(now)
@@ -1463,6 +1485,746 @@ def stats_for(provider: str, now: datetime | None = None) -> dict:
         )
 
 
+# ------------------------------------------------- provider definitions (data, not code)
+#
+# A provider whose whole reading is "one endpoint, one JSON document, a path to a number" does not
+# need a Python release: it needs a definition. Definitions live in `providers.d/*.json`, are
+# validated strictly before they are used, and a definition that is malformed, incomplete, or names
+# a credential that is not there still appears in the document — non-ok, with a one-line reason —
+# exactly the way a failing built-in adapter does. It never silently produces nothing.
+#
+# What a definition CAN express (every case below was observed in a real provider, and each has a
+# fixture under fixtures/providers.d):
+#
+#   percent field           claude-code   five_hour.utilization
+#   used/cap ratio pair     command-code  windowLimits.weekly.{used,cap}   (a ratio, not a percent)
+#   nested paths            any           "a.b.c" reaches response["a"]["b"]["c"]
+#   object keyed by window  opencode-go   usage.{rolling,weekly,monthly}.percent
+#   array keyed by a field  clinepass     data.limits[].{type,percentUsed}
+#   ISO-8601 reset          claude-code   five_hour.resets_at
+#   epoch reset             codex         reset_at (s); command-code resetAt (ms)
+#   reset as a duration     codex         reset_after_seconds
+#   window from a duration  codex         limit_window_seconds -> 5h | week | month
+#   prepaid balance         command-code  credits.balance, with a currency
+#
+# What it CANNOT express, and therefore why each of the five built-ins stays code: a second
+# endpoint (clinepass reads three, command-code two), pagination (clinepass' charge ledger), an
+# OAuth refresh, a plan/allowance lookup table (command-code's planId -> credits), a local
+# transcript fallback (claude-code, codex), an unverified unit reconciliation (clinepass'
+# cap-vs-charge unit), and local token history (all five; `stats` is a scanned shape, not a mapped
+# one). README.md carries this same split as a table. The format is an extension path, not a
+# replacement.
+#
+# Security is a property of the schema, not of review: a definition may only NAME a credential —
+# an environment variable, or a JSON file plus a dotted field. No key anywhere in this schema
+# accepts a secret, `Authorization` may not be set from a definition, and unknown keys are rejected
+# rather than ignored, so `"token": "sk-..."` fails validation *by name* instead of being quietly
+# accepted. Every read goes through `http_json`, so only http(s) is ever opened, and every reason a
+# definition produces is scrubbed by `_scrub` before it can reach the cache.
+
+DEFINITION_VERSION = 1
+DEFINITION_MAX_BYTES = 64 * 1024
+_DEF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+_DOTTED_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_][A-Za-z0-9_-]*)*$")
+_ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_RESET_FORMATS = ("iso", "epoch_s", "epoch_ms", "duration_s")
+# Keys that look like they hold a secret. Never legal anywhere in a definition.
+_SECRET_KEYS = frozenset(
+    {"token", "api_key", "apikey", "key", "secret", "password", "bearer", "authorization"}
+)
+_HEADER_DENY = frozenset({"authorization", "cookie", "proxy-authorization"})
+_MISSING = object()
+
+# What `--probe` says about a built-in adapter: where its credential is read from and which
+# endpoint it asks. Display metadata only, never used to read anything — and the selftest asserts
+# every built-in has an entry, so a sixth adapter fails the gate until this table is filled in too.
+BUILTIN_SOURCES = {
+    "claude-code": (
+        "~/.claude/.credentials.json [claudeAiOauth.accessToken]",
+        "https://api.anthropic.com/api/oauth/usage ($CLAUDE_API_BASE overrides it)",
+    ),
+    "codex": (
+        "~/.codex/auth.json [tokens.access_token]",
+        "https://chatgpt.com/backend-api/wham/usage ($CODEX_BACKEND_BASE overrides it)",
+    ),
+    "clinepass": (
+        "$CLINE_API_KEY or ~/secrets/cline.env, else ~/.cline/data/settings/providers.json",
+        "https://api.cline.bot/api/v1/users/me/plan/usage-limits ($CLINE_API_BASE overrides it)",
+    ),
+    "command-code": (
+        "$COMMAND_CODE_API_KEY or ~/secrets/command-code.env, else ~/.commandcode/auth.json",
+        "https://api.commandcode.ai/alpha/billing/credits ($COMMAND_CODE_API_BASE overrides it)",
+    ),
+    "opencode-go": (
+        "~/.local/share/opencode/auth.json [opencode-go.key]",
+        "https://opencode.ai/zen/go/v1/usage ($OPENCODE_GO_BASE overrides it)",
+    ),
+}
+
+
+def _clean(value: object) -> str | None:
+    """A trimmed non-empty string, or None. Every field in a definition is a string on purpose."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _dig(document: object, path: str):
+    """Follow a dotted path through objects; `_MISSING` when absent. Never raises, never indexes."""
+    node = document
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _MISSING
+        node = node[part]
+    return node
+
+
+def _display_path(path: Path) -> str:
+    """A home-collapsed path, for anything a reason or a list has to show a user."""
+    text = str(path)
+    home = os.path.expanduser("~")
+    if home and text.startswith(home + os.sep):
+        text = "~" + text[len(home) :]
+    return text
+
+
+def _def_extra_keys(obj: dict, allowed: set) -> list[str]:
+    """Every key a definition used that the schema does not define. Strict by design."""
+    return sorted(str(key) for key in set(obj) - allowed)
+
+
+def _def_extra_message(extra: list[str], where: str = "") -> str:
+    prefix = f"{where}: " if where else ""
+    named = [key for key in extra if key.lower() in _SECRET_KEYS]
+    if named:
+        return (
+            f"{prefix}unsupported key {named[0]!r}: a definition names a credential, "
+            "it never inlines one"
+        )
+    return f"{prefix}unsupported key(s) {', '.join(repr(key) for key in extra)}"
+
+
+def _definition_error_id(path: Path) -> str:
+    """A row id for a definition that could not be used.
+
+    A provider id can never contain a colon, so this can never collide with a provider — including
+    the one the broken definition was trying to be.
+    """
+    return f"definition:{path.stem}"
+
+
+def _def_row(row_id: str, origin: str, reason: str, status: str = "error") -> dict:
+    """A definition that cannot be used still reports, in a non-ok state, with a one-line reason."""
+    row = unknown(row_id, reason, source="api", status=status)
+    row["definition"] = origin
+    return row
+
+
+def definitions_dirs() -> list[Path]:
+    """Where definitions are read from, in order. `TMOS_USAGE_PROVIDERS_DIR` replaces both.
+
+    The plugin's own directory travels with the plugin (and is empty by default: the built-ins are
+    code). The user directory is where a definition normally lives. Both are read in that order and
+    the last one read wins a collision, so a user definition overrides a plugin one — and the
+    definition that lost is reported, never dropped.
+    """
+    override = (os.environ.get("TMOS_USAGE_PROVIDERS_DIR") or "").strip()
+    if override:
+        return [Path(os.path.expanduser(part)) for part in override.split(os.pathsep) if part]
+    return [
+        Path(__file__).resolve().parent.parent / "providers.d",
+        Path(os.path.expanduser("~/.config/tmos-ai-usage/providers.d")),
+    ]
+
+
+def _validate_window(raw: object, index: int) -> dict | str:
+    """One `windows[]` entry: the spec, or a one-line reason it is not usable."""
+    where = f"windows[{index}]"
+    if not isinstance(raw, dict):
+        return f"{where} must be an object"
+    kind = _clean(raw.get("kind"))
+    shape = {
+        "percent": {"kind", "window", "window_from_duration", "path", "reset"},
+        "ratio": {"kind", "window", "window_from_duration", "used", "cap", "reset"},
+        "map": {"kind", "from", "keys", "percent", "reset", "status"},
+        "list": {"kind", "from", "by", "keys", "percent", "reset", "status"},
+    }
+    if kind not in shape:
+        return f"{where}.kind is {kind!r}; the supported mappings are {', '.join(sorted(shape))}"
+    extra = _def_extra_keys(raw, shape[kind])
+    if extra:
+        return f"{where}: {_def_extra_message(extra)}"
+
+    window_name = _clean(raw.get("window"))
+    if window_name is not None and window_name not in WINDOW_ORDER:
+        return f"{where}.window must be one of {', '.join(WINDOW_ORDER)}"
+    from_duration = _clean(raw.get("window_from_duration"))
+    if from_duration is not None and not _DOTTED_RE.match(from_duration):
+        return f"{where}.window_from_duration must be a dotted path into the response"
+    if kind in ("percent", "ratio"):
+        if window_name is None and from_duration is None:
+            return (
+                f"{where} needs `window`, or `window_from_duration` for a provider that names a "
+                "window by its length"
+            )
+        if window_name is not None and from_duration is not None:
+            return f"{where} sets both `window` and `window_from_duration`; keep one"
+
+    reset_spec = None
+    reset = raw.get("reset")
+    if reset is not None:
+        if not isinstance(reset, dict):
+            return f"{where}.reset must be an object like {{'path': 'resets_at', 'format': 'iso'}}"
+        extra = _def_extra_keys(reset, {"path", "format"})
+        if extra:
+            return f"{where}.reset: {_def_extra_message(extra)}"
+        path = _clean(reset.get("path"))
+        fmt = _clean(reset.get("format"))
+        if path is None or not _DOTTED_RE.match(path):
+            return f"{where}.reset.path must be a dotted path into the response"
+        if fmt not in _RESET_FORMATS:
+            return f"{where}.reset.format must be one of {', '.join(_RESET_FORMATS)}"
+        reset_spec = {"path": path, "format": fmt}
+
+    if kind in ("percent", "ratio"):
+        for key in (["path"] if kind == "percent" else ["used", "cap"]):
+            value = _clean(raw.get(key))
+            if value is None or not _DOTTED_RE.match(value):
+                return f"{where}.{key} must be a dotted path into the response"
+        spec = {
+            "kind": kind,
+            "window": window_name,
+            "window_from_duration": from_duration,
+            "reset": reset_spec,
+        }
+        if kind == "percent":
+            spec["path"] = _clean(raw.get("path"))
+        else:
+            spec["used"] = _clean(raw.get("used"))
+            spec["cap"] = _clean(raw.get("cap"))
+        return spec
+
+    container = _clean(raw.get("from"))
+    if container is None or not _DOTTED_RE.match(container):
+        return f"{where}.from must be a dotted path to the object or array of windows"
+    raw_keys = raw.get("keys")
+    if not isinstance(raw_keys, dict) or not raw_keys:
+        return (
+            f"{where}.keys must map the provider's own field to a window, "
+            'for example {"five_hour": "5h"}'
+        )
+    keys: dict = {}
+    for key, name in raw_keys.items():
+        if not isinstance(key, str) or not key.strip():
+            return f"{where}.keys has a non-string field name"
+        if name not in WINDOW_ORDER:
+            return f"{where}.keys[{key!r}] must be one of {', '.join(WINDOW_ORDER)}"
+        keys[key] = name
+    if len(set(keys.values())) != len(keys):
+        return f"{where}.keys maps two provider fields onto the same window"
+    percent = _clean(raw.get("percent"))
+    if percent is None or not _DOTTED_RE.match(percent):
+        return f"{where}.percent must be a dotted path inside each item"
+    spec = {
+        "kind": kind,
+        "from": container,
+        "keys": keys,
+        "percent": percent,
+        "reset": reset_spec,
+        "status": None,
+    }
+    status_path = _clean(raw.get("status"))
+    if status_path is not None:
+        if not _DOTTED_RE.match(status_path):
+            return f"{where}.status must be a dotted path inside each item"
+        spec["status"] = status_path
+    if kind == "list":
+        by = _clean(raw.get("by"))
+        if by is None or not _DOTTED_RE.match(by):
+            return f"{where}.by must be a dotted path naming the field that selects the window"
+        spec["by"] = by
+    return spec
+
+
+def validate_definition(document: object, origin: str) -> tuple[dict | None, str | None]:
+    """Strict shape check of one `providers.d` file. Returns (spec, None) or (None, reason).
+
+    Strict on purpose: an unknown key is an error, not something to skip. That is what makes
+    "never inline a secret" a property of the format rather than a guideline for reviewers.
+    """
+
+    def bad(reason: str) -> tuple[None, str]:
+        return None, f"definition {origin}: {reason}"
+
+    if not isinstance(document, dict):
+        return bad("not a JSON object")
+    version = document.get("definition_version")
+    if version != DEFINITION_VERSION:
+        return bad(f"definition_version must be {DEFINITION_VERSION}, got {version!r}")
+    provider_id = _clean(document.get("id"))
+    if provider_id is None or not _DEF_ID_RE.match(provider_id):
+        return bad('`id` must be a lowercase name such as "acme" or "acme-ai"')
+    extra = _def_extra_keys(
+        document,
+        {
+            "definition_version",
+            "id",
+            "label",
+            "endpoint",
+            "windows",
+            "balance",
+            "plan_path",
+            "_source",
+        },
+    )
+    if extra:
+        return bad(_def_extra_message(extra))
+    label = _clean(document.get("label"))
+    if label is not None and len(label) > 60:
+        return bad("`label` is longer than 60 characters")
+
+    endpoint = document.get("endpoint")
+    if not isinstance(endpoint, dict):
+        return bad("`endpoint` must be an object")
+    extra = _def_extra_keys(endpoint, {"url", "base_url_env", "credential", "headers", "timeout_s"})
+    if extra:
+        return bad(_def_extra_message(extra, "endpoint"))
+    url = _clean(endpoint.get("url"))
+    if url is None:
+        return bad("`endpoint.url` is required")
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        return bad(f"`endpoint.url` must be http(s); {scheme or 'that'} is not read")
+    base_url_env = _clean(endpoint.get("base_url_env"))
+    if base_url_env is not None and not _ENV_NAME_RE.match(base_url_env):
+        return bad(f"`endpoint.base_url_env` must be an env var name, got {base_url_env!r}")
+    headers = endpoint.get("headers")
+    if headers is None:
+        headers = {}
+    if not isinstance(headers, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in headers.items()
+    ):
+        return bad("`endpoint.headers` must be an object of string values")
+    denied = sorted(key for key in headers if key.lower() in _HEADER_DENY)
+    if denied:
+        return bad(
+            f"`endpoint.headers.{denied[0]}` may not be set by a definition; "
+            "name a credential instead"
+        )
+    timeout = endpoint.get("timeout_s", TIMEOUT_S)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 30:
+        return bad("`endpoint.timeout_s` must be a number of seconds in (0, 30]")
+
+    credential = endpoint.get("credential")
+    if not isinstance(credential, dict):
+        return bad("`endpoint.credential` is required: {kind: env|json_file|none, ...}")
+    kind = _clean(credential.get("kind"))
+    if kind == "none":
+        if set(credential) != {"kind"}:
+            return bad("credential kind `none` takes no other keys")
+        resolved = {"kind": "none"}
+    elif kind == "env":
+        extra = _def_extra_keys(credential, {"kind", "name", "files"})
+        if extra:
+            return bad(_def_extra_message(extra, "credential"))
+        name = _clean(credential.get("name"))
+        if name is None or not _ENV_NAME_RE.match(name):
+            return bad("credential kind `env` needs an uppercase env var name in `name`")
+        files = credential.get("files", [])
+        if not isinstance(files, list) or not all(
+            isinstance(item, str) and item.strip() for item in files
+        ):
+            return bad("`credential.files` must be a list of env-file paths")
+        resolved = {
+            "kind": "env",
+            "name": name,
+            "files": [os.path.expanduser(item.strip()) for item in files],
+        }
+    elif kind == "json_file":
+        extra = _def_extra_keys(credential, {"kind", "path", "field"})
+        if extra:
+            return bad(_def_extra_message(extra, "credential"))
+        path = _clean(credential.get("path"))
+        field = _clean(credential.get("field"))
+        if path is None:
+            return bad("credential kind `json_file` needs `path`")
+        if field is None or not _DOTTED_RE.match(field):
+            return bad('credential kind `json_file` needs a dotted `field`')
+        resolved = {"kind": "json_file", "path": os.path.expanduser(path), "field": field}
+    else:
+        return bad(f"unsupported credential kind {kind!r} (env | json_file | none)")
+
+    windows = document.get("windows")
+    if not isinstance(windows, list) or not windows:
+        return bad("`windows` must be a non-empty array")
+    specs: list[dict] = []
+    seen: set[str] = set()
+    for index, raw_window in enumerate(windows):
+        window_spec = _validate_window(raw_window, index)
+        if isinstance(window_spec, str):
+            return bad(window_spec)
+        name = window_spec.get("window")
+        if name is not None:
+            if name in seen:
+                return bad(f"windows[{index}] repeats window {name!r}")
+            seen.add(name)
+        specs.append(window_spec)
+
+    balance_spec = None
+    balance = document.get("balance")
+    if balance is not None:
+        if not isinstance(balance, dict):
+            return bad("`balance` must be an object")
+        extra = _def_extra_keys(
+            balance, {"remaining", "funded", "currency", "currency_path", "estimated"}
+        )
+        if extra:
+            return bad(_def_extra_message(extra, "balance"))
+        remaining = _clean(balance.get("remaining"))
+        if remaining is None or not _DOTTED_RE.match(remaining):
+            return bad("`balance.remaining` must be a dotted path into the response")
+        funded = _clean(balance.get("funded"))
+        if funded is not None and not _DOTTED_RE.match(funded):
+            return bad("`balance.funded` must be a dotted path into the response")
+        currency = _clean(balance.get("currency")) or "USD"
+        if not re.match(r"^[A-Za-z]{3}$", currency):
+            return bad("`balance.currency` must be a three-letter code")
+        currency_path = _clean(balance.get("currency_path"))
+        if currency_path is not None and not _DOTTED_RE.match(currency_path):
+            return bad("`balance.currency_path` must be a dotted path into the response")
+        estimated = balance.get("estimated", False)
+        if not isinstance(estimated, bool):
+            return bad("`balance.estimated` must be true or false")
+        balance_spec = {
+            "remaining": remaining,
+            "funded": funded,
+            "currency": currency.upper(),
+            "currency_path": currency_path,
+            "estimated": estimated,
+        }
+
+    plan_path = _clean(document.get("plan_path"))
+    if plan_path is not None and not _DOTTED_RE.match(plan_path):
+        return bad("`plan_path` must be a dotted path into the response")
+
+    return {
+        "id": provider_id,
+        "label": label,
+        "origin": origin,
+        "url": url,
+        "base_url_env": base_url_env,
+        "headers": dict(headers),
+        "timeout_s": float(timeout),
+        "credential": resolved,
+        "windows": specs,
+        "balance": balance_spec,
+        "plan_path": plan_path,
+    }, None
+def _definition_reset(reset_spec: dict | None, anchor: object, now: datetime) -> datetime | None:
+    """The reset a window spec points at, in whichever of the four forms it named."""
+    if not reset_spec:
+        return None
+    raw = _dig(anchor, reset_spec["path"])
+    if raw is _MISSING:
+        return None
+    fmt = reset_spec["format"]
+    if fmt == "iso":
+        return _parse_iso(raw)
+    if fmt == "epoch_s":
+        return _from_epoch(raw, "s")
+    if fmt == "epoch_ms":
+        return _from_epoch(raw, "ms")
+    # `duration_s`: the provider says "in N seconds" instead of when. Resolved against this run's
+    # clock, which is the only clock the provider left us.
+    seconds = _num(raw)
+    return now + timedelta(seconds=seconds) if seconds is not None else None
+
+
+def _definition_notes(item: object, status_path: str | None, name: str, notes: list[str]) -> None:
+    """A window the provider itself marked as throttled keeps that word, as parse_opencode does."""
+    if not status_path:
+        return
+    raw = _dig(item, status_path)
+    if isinstance(raw, str) and raw.strip() and raw.strip().lower() != "ok":
+        notes.append(f"{name}:{_scrub(raw)}")
+
+
+def _definition_window_name(wspec: dict, payload: dict) -> str | None:
+    """The window a spec names — spelled out, or derived from a length the provider published."""
+    if wspec["window_from_duration"]:
+        return window_for_duration(_dig(payload, wspec["window_from_duration"]))
+    return wspec["window"]
+
+
+def _definition_rows(spec: dict, payload: dict, now: datetime) -> tuple[list[dict], list[str]]:
+    """Map a response onto window rows. Every branch skips what it cannot read; nothing invented."""
+    rows: list[dict] = []
+    notes: list[str] = []
+    seen: set[str] = set()
+
+    for wspec in spec["windows"]:
+        kind = wspec["kind"]
+        if kind == "percent":
+            name = _definition_window_name(wspec, payload)
+            used = _num(_dig(payload, wspec["path"]))
+            if name is None or name in seen or used is None:
+                continue
+            seen.add(name)
+            rows.append(window(name, used, _definition_reset(wspec["reset"], payload, now), now))
+            continue
+        if kind == "ratio":
+            name = _definition_window_name(wspec, payload)
+            used = _num(_dig(payload, wspec["used"]))
+            cap = _num(_dig(payload, wspec["cap"]))
+            if name is None or name in seen or used is None or cap is None or cap <= 0:
+                continue
+            seen.add(name)
+            rows.append(
+                window(name, used / cap * 100.0, _definition_reset(wspec["reset"], payload, now), now)
+            )
+            continue
+        container = _dig(payload, wspec["from"])
+        pairs: list = []
+        if kind == "map":
+            if isinstance(container, dict):
+                pairs = [(key, container.get(key)) for key in wspec["keys"]]
+        elif isinstance(container, list):
+            pairs = [(None, item) for item in container]
+        for key, item in pairs:
+            if not isinstance(item, dict):
+                continue
+            if key is not None:
+                name = wspec["keys"][key]
+            else:
+                raw_by = _dig(item, wspec["by"])
+                name = wspec["keys"].get(raw_by) if isinstance(raw_by, str) else None
+            if name is None or name in seen:
+                continue
+            percent = _num(_dig(item, wspec["percent"]))
+            if percent is None:
+                continue
+            seen.add(name)
+            rows.append(window(name, percent, _definition_reset(wspec["reset"], item, now), now))
+            _definition_notes(item, wspec["status"], name, notes)
+    return rows, notes
+
+
+def _definition_balance(spec: dict, payload: dict) -> dict | None:
+    """The prepaid ledger a spec pointed at, or nothing at all — never a fabricated zero."""
+    bspec = spec["balance"]
+    if not bspec:
+        return None
+    remaining = _num(_dig(payload, bspec["remaining"]))
+    if remaining is None:
+        return None
+    currency = bspec["currency"]
+    raw_currency = _dig(payload, bspec["currency_path"]) if bspec["currency_path"] else _MISSING
+    if isinstance(raw_currency, str) and re.match(r"^[A-Za-z]{3}$", raw_currency.strip()):
+        currency = raw_currency.strip().upper()
+    out = {
+        "remaining": round(remaining, 2),
+        "currency": currency,
+        "estimated": bspec["estimated"],
+    }
+    funded = _num(_dig(payload, bspec["funded"])) if bspec["funded"] else None
+    if funded is not None:
+        out["funded"] = round(funded, 2)
+        out["spent"] = round(max(0.0, funded - remaining), 2)
+    return out
+
+
+def _definition_reason(spec: dict, reason: str) -> str:
+    """A definition's reason names its own file first: that is the file the user has to edit.
+
+    It matters because `_scrub` cannot tell a long identifier from a token: an environment variable
+    named in a reason is redacted when its name runs to 24 characters or more. Naming the file
+    first keeps the reason actionable either way.
+    """
+    return f"definition {spec['origin']}: {reason}"
+
+
+def parse_definition(spec: dict, payload: object, now: datetime | None = None) -> dict:
+    """One definition's response, mapped onto the window/balance contract. Pure: no I/O."""
+    now = now or _now()
+    if not isinstance(payload, dict):
+        out = unknown(
+            spec["id"],
+            _definition_reason(spec, "the endpoint returned a JSON document that is not an object"),
+        )
+    else:
+        rows, notes = _definition_rows(spec, payload, now)
+        if not rows:
+            out = unknown(
+                spec["id"],
+                _definition_reason(spec, "no configured window carried a number in the response"),
+            )
+        else:
+            out = record(
+                spec["id"], status="ok", windows=rows, note="; ".join(notes), observed_at=now
+            )
+            if spec["plan_path"]:
+                raw_plan = _dig(payload, spec["plan_path"])
+                if isinstance(raw_plan, str) and raw_plan.strip():
+                    out["plan"] = _scrub(raw_plan)
+            balance = _definition_balance(spec, payload)
+            if balance:
+                out["balance"] = balance
+    # A definition's row always says how to name it and which file it came from, at every status:
+    # a broken definition is exactly the case where a user needs to see where it came from.
+    if spec["label"]:
+        out["label"] = spec["label"]
+    out["definition"] = spec["origin"]
+    return out
+
+
+def _credential_text(credential: dict) -> str:
+    """How a credential is described without ever describing its value."""
+    kind = credential["kind"]
+    if kind == "none":
+        return "none (public endpoint)"
+    if kind == "env":
+        files = [_display_path(Path(item)) for item in credential["files"]]
+        return " or ".join([f"${credential['name']}"] + files)
+    return f"{_display_path(Path(credential['path']))} [{credential['field']}]"
+
+
+def resolve_credential(credential: dict) -> tuple[str | None, str | None]:
+    """The token a definition named, or a one-line reason it is not there.
+
+    The reason names the *location* that was checked and never a value, so a definition that
+    cannot authenticate is explained in the document with no secret anywhere near it.
+    """
+    kind = credential["kind"]
+    if kind == "none":
+        return None, None
+    if kind == "env":
+        token = env_or_file_key(credential["name"], [Path(item) for item in credential["files"]])
+        if not token:
+            where = ", ".join(_display_path(Path(item)) for item in credential["files"])
+            return None, f"${credential['name']} is not set and is not in {where or 'any env file'}"
+        return token, None
+    document = read_json(Path(credential["path"]))
+    if document is None:
+        return None, f"{_display_path(Path(credential['path']))} is missing or is not JSON"
+    value = _dig(document, credential["field"])
+    if not isinstance(value, str) or not value.strip():
+        return None, f"{_display_path(Path(credential['path']))} carries no {credential['field']}"
+    return value.strip(), None
+
+
+def _definition_url(spec: dict) -> str:
+    """The URL to read: the definition's own, with its host swapped when `base_url_env` is set.
+
+    The same knob the built-in adapters have, for the same reason: the gate points every endpoint
+    at a dead local port, so a run can be *proven* not to touch the network. The path is kept.
+    """
+    base_env = spec["base_url_env"]
+    override = (os.environ.get(base_env) or "").strip() if base_env else ""
+    if not override:
+        return spec["url"]
+    original = urllib.parse.urlsplit(spec["url"])
+    replacement = urllib.parse.urlsplit(override)
+    return urllib.parse.urlunsplit(
+        (replacement.scheme, replacement.netloc, original.path, original.query, original.fragment)
+    )
+
+
+def collect_definition(spec: dict) -> dict:
+    """One definition: resolve the credential it named, read its one endpoint, map the document."""
+    token, reason = resolve_credential(spec["credential"])
+    if reason is not None:
+        return _definition_failure(spec, reason, "unauthenticated")
+    return parse_definition(
+        spec,
+        http_json(
+            _definition_url(spec),
+            token,
+            headers=spec["headers"] or None,
+            timeout=spec["timeout_s"],
+        ),
+    )
+
+
+def _definition_failure(spec: dict, reason: str, status: str) -> dict:
+    """A definition's read failed: a row that says so, never a provider that quietly disappears."""
+    row = unknown(spec["id"], _definition_reason(spec, reason), status=status)
+    if spec["label"]:
+        row["label"] = spec["label"]
+    row["definition"] = spec["origin"]
+    return row
+
+
+def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[dict]]:
+    """Read every `providers.d/*.json`: (usable specs, one error row per definition not usable).
+
+    Nothing is dropped in silence. Malformed JSON, a missing key, an unsupported mapping, an
+    inlined secret, and an id a built-in already owns each become a row in the document with a
+    one-line reason. Built-in adapters always win their id; between definition files the last one
+    read wins, and the one that lost is reported.
+    """
+    specs: dict[str, dict] = {}
+    rows: list[dict] = []
+    for directory in dirs if dirs is not None else definitions_dirs():
+        try:
+            files = sorted(path for path in directory.glob("*.json") if path.is_file())
+        except OSError:
+            continue
+        for path in files:
+            origin = _display_path(path)
+            error_id = _definition_error_id(path)
+            try:
+                if path.stat().st_size > DEFINITION_MAX_BYTES:
+                    rows.append(
+                        _def_row(
+                            error_id,
+                            origin,
+                            f"definition {origin}: larger than {DEFINITION_MAX_BYTES} bytes",
+                        )
+                    )
+                    continue
+                raw = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                rows.append(
+                    _def_row(
+                        error_id, origin, f"definition {origin}: unreadable ({type(exc).__name__})"
+                    )
+                )
+                continue
+            try:
+                document = json.loads(raw)
+            except ValueError as exc:
+                rows.append(
+                    _def_row(error_id, origin, f"definition {origin}: not JSON ({_scrub(exc)})")
+                )
+                continue
+            spec, error = validate_definition(document, origin)
+            if spec is None:
+                rows.append(_def_row(error_id, origin, error or f"definition {origin}: invalid"))
+                continue
+            provider_id = spec["id"]
+            if provider_id in COLLECTORS:
+                rows.append(
+                    _def_row(
+                        error_id,
+                        origin,
+                        f"definition {origin}: ignored — the built-in adapter {provider_id!r} "
+                        "wins on an id collision",
+                    )
+                )
+                continue
+            holder = specs.get(provider_id)
+            if holder is not None:
+                rows.append(
+                    _def_row(
+                        _definition_error_id(Path(holder["origin"])),
+                        holder["origin"],
+                        f"definition {holder['origin']}: ignored — {origin} defines id "
+                        f"{provider_id!r} later and wins",
+                    )
+                )
+            specs[provider_id] = spec
+    return [specs[key] for key in sorted(specs)], rows
 # ------------------------------------------------------------------ collectors (I/O)
 
 
@@ -1756,9 +2518,26 @@ def document_totals(providers: list[dict]) -> dict:
 
 
 def collect_all(only: list[str] | None = None, *, local_stats: bool = True) -> dict:
-    """Every collector runs behind its own guard: one provider's bad day is not an outage."""
+    """Every collector runs behind its own guard: one provider's bad day is not an outage.
+
+    Definition-based providers are collected the same way, and guarded the same way: a definition
+    that cannot be loaded, and one whose endpoint cannot be read, each contribute a row carrying a
+    one-line reason instead of disappearing from the document.
+    """
     providers = []
     now = _now()
+    definition_reason = "definition-based provider: TMOS reads no local transcript for it"
+    specs, definition_rows = load_definitions()
+    for row in definition_rows:
+        if only and row["provider"] not in only:
+            continue
+        row["elapsed_ms"] = 0
+        row["stats"] = (
+            stats_for(row["provider"], now, definition_reason)
+            if local_stats
+            else _no_stats("", {}, "local scan skipped (--no-stats)")
+        )
+        providers.append(row)
     for name, fn in COLLECTORS.items():
         if only and name not in only:
             continue
@@ -1774,6 +2553,29 @@ def collect_all(only: list[str] | None = None, *, local_stats: bool = True) -> d
         row["elapsed_ms"] = _int((time.monotonic() - started) * 1000)
         row["stats"] = (
             stats_for(name, now)
+            if local_stats
+            else _no_stats("", {}, "local scan skipped (--no-stats)")
+        )
+        providers.append(row)
+    for spec in specs:
+        if only and spec["id"] not in only:
+            continue
+        started = time.monotonic()
+        try:
+            row = collect_definition(spec)
+        except urllib.error.HTTPError as exc:
+            row = _definition_failure(
+                spec, f"HTTP {exc.code} from the definition endpoint", "unknown"
+            )
+        except urllib.error.URLError as exc:
+            row = _definition_failure(
+                spec, f"network unreachable ({type(exc.reason).__name__})", "unknown"
+            )
+        except Exception as exc:  # a definition must never take the run down
+            row = _definition_failure(spec, f"{type(exc).__name__}: {exc}", "error")
+        row["elapsed_ms"] = _int((time.monotonic() - started) * 1000)
+        row["stats"] = (
+            stats_for(spec["id"], now, definition_reason)
             if local_stats
             else _no_stats("", {}, "local scan skipped (--no-stats)")
         )
@@ -1818,11 +2620,20 @@ def _selftest() -> int:
         if not cond:
             failures.append(label)
 
-    def fx(name: str) -> object:
-        document = read_json(FIXTURES / name)
+    def load_fixture(path: Path) -> object:
+        document = read_json(path)
         if document is None:
-            raise SystemExit(f"fixture missing or unreadable: {FIXTURES / name}")
+            raise SystemExit(f"fixture missing or unreadable: {path}")
         return document
+
+    def fx(name: str) -> object:
+        return load_fixture(FIXTURES / name)
+
+    def def_dir(name: str) -> Path:
+        return FIXTURES.parent / name
+
+    def resp(name: str) -> object:
+        return load_fixture(def_dir("providers.responses") / name)
 
     oc = parse_opencode(fx("opencode-go.json"), now)
     check(
@@ -2264,6 +3075,170 @@ def _selftest() -> int:
         COLLECTORS.clear()
         COLLECTORS.update(boom)
 
+    # ------------------------------------------ provider definitions (data, not code)
+    # The format is data, so its proof is data: one fixture per mapping the format claims (parsed
+    # offline against a response fixture), and one fixture per way a definition can fail. Every
+    # failure must surface as a row with a reason — a definition that silently produces nothing is
+    # the one outcome this layer has to make impossible.
+
+    specs, load_errors = load_definitions([def_dir("providers.d")])
+    by_id = {spec["id"]: spec for spec in specs}
+    check(
+        "definitions: every example under fixtures/providers.d loads",
+        sorted(by_id) == ["acme", "nimbus", "orbital", "quarry", "relay"],
+        f"loaded={sorted(by_id)} errors={[row['note'] for row in load_errors]}",
+    )
+    check(
+        "definitions: a directory that does not exist loads nothing and raises nothing",
+        load_definitions([def_dir("no-such-directory")]) == ([], []),
+        "a missing providers.d must be normal, not an error",
+    )
+    check(
+        "definitions: every built-in adapter has a --probe provenance entry",
+        set(BUILTIN_SOURCES) == set(COLLECTORS),
+        str(sorted(set(BUILTIN_SOURCES) ^ set(COLLECTORS))),
+    )
+
+    acme = parse_definition(by_id["acme"], resp("acme.json"), now)
+    check(
+        "definition percent: nested paths become 5h/week with their ISO resets",
+        acme["status"] == "ok"
+        and [w["name"] for w in acme["windows"]] == ["5h", "week"]
+        and acme["windows"][0]["used_pct"] == 23.0
+        and acme["windows"][0]["remaining_pct"] == 77.0
+        and acme["windows"][0]["resets_in_s"] == 9000,
+        str(acme),
+    )
+    check(
+        "definition balance: remaining/funded/spent, labelled as the definition asked",
+        acme.get("balance", {}).get("remaining") == 12.34
+        and acme["balance"]["funded"] == 20.0
+        and acme["balance"]["spent"] == 7.66
+        and acme["balance"]["estimated"] is True,
+        str(acme.get("balance")),
+    )
+    check(
+        "definition: label, plan and origin ride along for the surface and for --probe",
+        acme.get("label") == "Acme AI"
+        and acme["definition"].endswith("providers.d/acme.json")
+        and acme.get("plan") == "Acme Pro",
+        f"{acme.get('label')} {acme['definition']} {acme.get('plan')}",
+    )
+
+    nimbus = parse_definition(by_id["nimbus"], resp("nimbus.json"), now)
+    check(
+        "definition ratio: a used/cap pair becomes a percentage, not a percent off the wire",
+        nimbus["status"] == "ok"
+        and [w["name"] for w in nimbus["windows"]] == ["week"]
+        and nimbus["windows"][0]["used_pct"] == 28.0,
+        str(nimbus),
+    )
+    check(
+        "definition ratio: an epoch-millisecond reset is read as a time",
+        nimbus["windows"][0]["resets_at"] == "2026-09-24T20:00:00Z"
+        and nimbus["windows"][0]["resets_in_s"] == 259200,
+        str(nimbus["windows"][0]),
+    )
+
+    orbital = parse_definition(by_id["orbital"], resp("orbital.json"), now)
+    check(
+        "definition map: an object keyed by the provider's own names maps onto the windows",
+        orbital["status"] == "ok"
+        and [w["name"] for w in orbital["windows"]] == ["5h", "week", "month"]
+        and orbital["windows"][2]["used_pct"] == 33.0,
+        str(orbital),
+    )
+    check(
+        "definition map: a window the provider itself marked throttled keeps that word",
+        orbital["note"] == "week:rate_limited",
+        orbital["note"],
+    )
+
+    quarry = parse_definition(by_id["quarry"], resp("quarry.json"), now)
+    check(
+        "definition list: an array selected by one of its own fields maps onto windows",
+        quarry["status"] == "ok"
+        and [w["name"] for w in quarry["windows"]] == ["5h", "week", "month"]
+        and quarry["windows"][1]["used_pct"] == 60.0,
+        str(quarry),
+    )
+
+    relay = parse_definition(by_id["relay"], resp("relay.json"), now)
+    check(
+        "definition window_from_duration: a length the provider published names the window",
+        [w["name"] for w in relay["windows"]] == ["5h", "week"],
+        str(relay),
+    )
+    check(
+        "definition reset as a duration: resolved against this run's clock",
+        relay["windows"][0]["resets_in_s"] == 852 and relay.get("plan") == "plus",
+        str(relay["windows"][0]),
+    )
+
+    # Negative controls. Each must fail visibly: an unusable definition that produces no row at all
+    # is the bug this format cannot be allowed to have.
+    reject_specs, reject_rows = load_definitions([def_dir("providers.reject.d")])
+    reject_by_id = {spec["id"]: spec for spec in reject_specs}
+    problems = " | ".join(row["note"] for row in reject_rows)
+    check(
+        "negative control: a definition that is not JSON -> a row with a reason",
+        "definition:broken" in [row["provider"] for row in reject_rows]
+        and "not JSON" in problems,
+        problems,
+    )
+    check(
+        "negative control: an unsupported mapping -> a row naming the key",
+        "windows[0].kind is 'graphql'" in problems,
+        problems,
+    )
+    check(
+        "negative control: a secret inlined in a definition -> refused by name",
+        "unsupported key 'token'" in problems and "never inlines one" in problems,
+        problems,
+    )
+    check(
+        "negative control: a definition reusing a built-in id loses and says so",
+        "wins on an id collision" in problems,
+        problems,
+    )
+    check(
+        "negative control: a malformed response shape -> unknown, never a fabricated window",
+        parse_definition(by_id["acme"], fx("malformed.json"), now)["status"] == "unknown",
+        str(parse_definition(by_id["acme"], fx("malformed.json"), now)),
+    )
+    absent = collect_definition(reject_by_id["absent"]) if "absent" in reject_by_id else {}
+    check(
+        "negative control: a credential that is not there -> unauthenticated, and it says which",
+        absent.get("status") == "unauthenticated"
+        and "ABSENT_PROVIDER_API_KEY" in absent.get("note", "")
+        and absent.get("note", "").startswith("definition "),
+        str(absent),
+    )
+
+    # A definition is a provider end to end, not only inside the mapping: `--only` selects it, the
+    # run guards it, and it carries the same stats and timing block every other row carries.
+    previous_dirs = os.environ.get("TMOS_USAGE_PROVIDERS_DIR")
+    try:
+        os.environ["TMOS_USAGE_PROVIDERS_DIR"] = str(def_dir("providers.reject.d"))
+        refused_doc = collect_all(["refused"], local_stats=False)
+    finally:
+        if previous_dirs is None:
+            os.environ.pop("TMOS_USAGE_PROVIDERS_DIR", None)
+        else:
+            os.environ["TMOS_USAGE_PROVIDERS_DIR"] = previous_dirs
+    refused_row = refused_doc["providers"][0] if refused_doc["providers"] else {}
+    check(
+        "negative control: a refused definition endpoint -> a reason, never an ok reading",
+        refused_doc["schema_version"] == SCHEMA_VERSION
+        and len(refused_doc["providers"]) == 1
+        and refused_row.get("provider") == "refused"
+        and refused_row.get("status") not in (None, "ok")
+        and bool(refused_row.get("note"))
+        and "stats" in refused_row
+        and "elapsed_ms" in refused_row,
+        str(refused_doc["providers"]),
+    )
+
     print(f"selftest: {len(failures)} failure(s)")
     return 1 if failures else 0
 
@@ -2271,7 +3246,171 @@ def _selftest() -> int:
 # ------------------------------------------------------------------ cli
 
 
+def _window_names(spec: dict) -> list[str]:
+    """The windows a definition says it maps, for `--list-providers`."""
+    names: list[str] = []
+    for wspec in spec["windows"]:
+        if wspec["kind"] in ("percent", "ratio"):
+            declared = [wspec["window"] or "by length"]
+        else:
+            declared = sorted(
+                set(wspec["keys"].values()), key=lambda name: WINDOW_ORDER.get(name, 99)
+            )
+        for name in declared:
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _list_providers(specs: list[dict], definition_rows: list[dict], as_json: bool) -> int:
+    """Everything TMOS would collect, and where each one comes from. Never touches the network.
+
+    This is the command a user runs while writing a definition: a definition that cannot be used
+    is listed with its reason instead of quietly not appearing.
+    """
+    rows = []
+    for provider_id in sorted(COLLECTORS):
+        credential, endpoint = BUILTIN_SOURCES.get(provider_id, ("", ""))
+        rows.append(
+            {
+                "provider": provider_id,
+                "kind": "built-in",
+                "origin": "collector/usage_collector.py",
+                "credential": credential,
+                "endpoint": endpoint,
+                "windows": "the provider's own",
+                "problem": "",
+            }
+        )
+    for spec in specs:
+        rows.append(
+            {
+                "provider": spec["id"],
+                "kind": "definition",
+                "origin": spec["origin"],
+                "credential": _credential_text(spec["credential"]),
+                "endpoint": spec["url"],
+                "windows": ",".join(_window_names(spec)),
+                "problem": "",
+            }
+        )
+    for row in definition_rows:
+        rows.append(
+            {
+                "provider": row["provider"],
+                "kind": "problem",
+                "origin": row.get("definition", ""),
+                "credential": "",
+                "endpoint": "",
+                "windows": "",
+                "problem": row["note"],
+            }
+        )
+    if as_json:
+        print(json.dumps({"providers": rows}, indent=2))
+        return 0
+    for row in rows:
+        print(f"{row['kind']:<10} {row['provider']:<20} {row['origin']}")
+        for label, value in (
+            ("credential", row["credential"]),
+            ("endpoint", f"GET {row['endpoint']}" if row["endpoint"] else ""),
+            ("windows", row["windows"]),
+            ("problem", row["problem"]),
+        ):
+            if value:
+                print(f"{'':<10} {'':<20} {label + ':':<11}{value}")
+    print(
+        f"\n{len(COLLECTORS)} built-in adapter(s), {len(specs)} usable definition(s), "
+        f"{len(definition_rows)} definition(s) that cannot be used."
+    )
+    return 0
+
+
+def _print_probe(row: dict) -> None:
+    """What was read, in the shape the collector stores it: a reason where a number is missing."""
+    print(f"status:     {row['status']}" + (f"  ({row['note']})" if row["note"] else ""))
+    if row.get("plan"):
+        print(f"plan:       {row['plan']}")
+    for item in row["windows"]:
+        reset = (
+            f"resets {item['resets_at']} (in {item['resets_in_s']}s)"
+            if item["resets_in_s"] is not None
+            else "no reset published"
+        )
+        print(
+            f"window      {item['name']:<5} {item['used_pct']:>5.1f}% used, "
+            f"{item['remaining_pct']:>5.1f}% left, {reset}"
+        )
+    if not row["windows"]:
+        print("windows     none")
+    balance = row.get("balance")
+    if isinstance(balance, dict):
+        funded = f" of {balance['funded']}" if "funded" in balance else ""
+        tail = " (estimated)" if balance.get("estimated") else ""
+        print(f"balance     {balance['remaining']}{funded} {balance.get('currency', 'USD')}{tail}")
+
+
+def _probe(
+    provider_id: str, specs: list[dict], definition_rows: list[dict], as_json: bool
+) -> int:
+    """Read one provider now, and say what came back and where it came from.
+
+    A provider in a non-ok state is a successful probe: the reason *is* the answer. Only an id that
+    does not exist at all exits non-zero.
+    """
+    spec = next((item for item in specs if item["id"] == provider_id), None)
+    if spec is None and provider_id not in COLLECTORS:
+        broken = next((row for row in definition_rows if row["provider"] == provider_id), None)
+        if broken is None:
+            print(
+                f"no provider {provider_id!r}; --list-providers shows what there is",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"provider:   {provider_id}")
+        print(f"origin:     definition {broken.get('definition', '')}")
+        print(f"status:     {broken['status']}")
+        print(f"reason:     {broken['note']}")
+        return 0
+    if spec is not None:
+        print(f"provider:   {spec['id']}")
+        print(f"origin:     definition {spec['origin']}")
+        print(f"label:      {spec['label'] or spec['id']}")
+        print(f"credential: {_credential_text(spec['credential'])}")
+        # The token is deliberately dropped on the floor: `--probe` reports whether a credential is
+        # readable, never the credential itself.
+        _, reason = resolve_credential(spec["credential"])
+        print(f"            -> {'readable' if reason is None else reason}")
+        print(f"endpoint:   GET {_definition_url(spec)}")
+        try:
+            row = collect_definition(spec)
+        except urllib.error.HTTPError as exc:
+            row = _definition_failure(spec, f"HTTP {exc.code} from the endpoint", "unknown")
+        except urllib.error.URLError as exc:
+            row = _definition_failure(
+                spec, f"network unreachable ({type(exc.reason).__name__})", "unknown"
+            )
+        except Exception as exc:
+            row = _definition_failure(spec, f"{type(exc).__name__}: {exc}", "error")
+    else:
+        credential, endpoint = BUILTIN_SOURCES.get(provider_id, ("", ""))
+        print(f"provider:   {provider_id}")
+        print("origin:     built-in adapter in collector/usage_collector.py")
+        print(f"credential: {credential}")
+        print(f"endpoint:   GET {endpoint}")
+        try:
+            row = COLLECTORS[provider_id]()
+        except Exception as exc:
+            row = unknown(provider_id, f"{type(exc).__name__}: {exc}", status="error")
+    if as_json:
+        print(json.dumps(row, indent=2))
+        return 0
+    _print_probe(row)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    specs, definition_rows = load_definitions()
     ap = argparse.ArgumentParser(
         description="Collect AI subscription usage windows for tmos.usage."
     )
@@ -2279,18 +3418,29 @@ def main(argv: list[str] | None = None) -> int:
         "--once", action="store_true", help="collect once and write the cache"
     )
     ap.add_argument(
-        "--json", action="store_true", help="print the merged document on stdout"
+        "--json", action="store_true", help="print the document (or the probe) on stdout"
     )
     ap.add_argument(
         "--only",
         action="append",
-        choices=sorted(COLLECTORS),
-        help="limit the run to one provider (repeatable)",
+        choices=sorted(set(COLLECTORS) | {spec["id"] for spec in specs}),
+        help="limit the run to one provider (repeatable); a definition id works too",
     )
     ap.add_argument(
         "--no-stats",
         action="store_true",
         help="skip the local transcript scan (limits only, no token history)",
+    )
+    ap.add_argument(
+        "--list-providers",
+        action="store_true",
+        help="list every provider TMOS would collect, built-in or definition; no network",
+    )
+    ap.add_argument(
+        "--probe",
+        metavar="ID",
+        default=None,
+        help="read one provider now and show what came back and where it came from",
     )
     ap.add_argument(
         "--selftest", action="store_true", help="parse fixtures offline; no network"
@@ -2304,8 +3454,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.selftest:
         return _selftest()
+    if args.list_providers:
+        return _list_providers(specs, definition_rows, args.json)
+    if args.probe:
+        return _probe(args.probe, specs, definition_rows, args.json)
     if not args.once:
-        ap.error("nothing to do: pass --once (optionally with --json) or --selftest")
+        ap.error(
+            "nothing to do: pass --once (optionally with --json), --list-providers, "
+            "--probe ID, or --selftest"
+        )
 
     document = collect_all(args.only, local_stats=not args.no_stats)
     try:

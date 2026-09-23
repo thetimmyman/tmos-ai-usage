@@ -1,0 +1,15 @@
+{
+  "_source": "the response fixtures/providers.d/acme.json maps (shape modelled on Anthropic's /api/oauth/usage; values synthetic)",
+  "plan": {"name": "Acme Pro"},
+  "usage": {
+    "five_hour": {
+      "utilization": 23.0,
+      "resets_at": "2026-09-21T22:30:00.000000+00:00"
+    },
+    "seven_day": {
+      "utilization": 95.0,
+      "resets_at": "2026-09-24T18:00:00.000000+00:00"
+    }
+  },
+  "credits": {"remaining": 12.34, "funded": 20.0}
+}

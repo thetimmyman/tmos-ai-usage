@@ -1,0 +1,37 @@
+{
+  "_source": "example definition: percents at nested paths, ISO-8601 resets, a plan name and a prepaid balance. The URL is a dead local port so a test can never reach a real provider.",
+  "definition_version": 1,
+  "id": "acme",
+  "label": "Acme AI",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/v1/usage",
+    "base_url_env": "ACME_API_BASE",
+    "credential": {
+      "kind": "env",
+      "name": "ACME_API_KEY",
+      "files": ["~/.config/tmos-ai-usage/selftest-acme.env"]
+    },
+    "timeout_s": 1
+  },
+  "plan_path": "plan.name",
+  "windows": [
+    {
+      "kind": "percent",
+      "window": "5h",
+      "path": "usage.five_hour.utilization",
+      "reset": {"path": "usage.five_hour.resets_at", "format": "iso"}
+    },
+    {
+      "kind": "percent",
+      "window": "week",
+      "path": "usage.seven_day.utilization",
+      "reset": {"path": "usage.seven_day.resets_at", "format": "iso"}
+    }
+  ],
+  "balance": {
+    "remaining": "credits.remaining",
+    "funded": "credits.funded",
+    "currency": "USD",
+    "estimated": true
+  }
+}

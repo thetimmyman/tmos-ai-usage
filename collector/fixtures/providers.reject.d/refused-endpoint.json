@@ -1,0 +1,14 @@
+{
+  "_source": "negative control: a well-formed definition on a port nothing listens on. The read must fail into a reason, never into an invented window.",
+  "definition_version": 1,
+  "id": "refused",
+  "label": "Refused",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/usage",
+    "credential": {"kind": "none"},
+    "timeout_s": 1
+  },
+  "windows": [
+    {"kind": "percent", "window": "5h", "path": "usage.percent"}
+  ]
+}

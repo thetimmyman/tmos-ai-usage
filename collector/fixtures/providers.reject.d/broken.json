@@ -1,0 +1,7 @@
+{
+  "_source": "negative control: this file is deliberately NOT valid JSON (truncated mid-object), so the loader must report it instead of skipping it.",
+  "definition_version": 1,
+  "id": "broken",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/usage",
+    "credential": {"kind": "none"}

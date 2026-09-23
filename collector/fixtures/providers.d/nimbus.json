@@ -1,0 +1,24 @@
+{
+  "_source": "example definition: a used/cap RATIO rather than a percent, an epoch-millisecond reset, and a credential read out of a JSON file the provider's own CLI wrote.",
+  "definition_version": 1,
+  "id": "nimbus",
+  "label": "Nimbus Cloud",
+  "endpoint": {
+    "url": "http://127.0.0.1:9/alpha/billing/credits",
+    "credential": {
+      "kind": "json_file",
+      "path": "~/.config/nimbus/auth.json",
+      "field": "apiKey"
+    },
+    "timeout_s": 1
+  },
+  "windows": [
+    {
+      "kind": "ratio",
+      "window": "week",
+      "used": "windowLimits.weekly.used",
+      "cap": "windowLimits.weekly.cap",
+      "reset": {"path": "windowLimits.weekly.resetAt", "format": "epoch_ms"}
+    }
+  ]
+}
