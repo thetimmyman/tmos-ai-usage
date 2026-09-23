@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "updated_at": "2026-09-21T19:10:20.000Z",
+  "sessionId": "1790017816235_k9ukm",
+  "messages": [
+    {"id": "msg_1", "role": "user", "content": [{"type": "text", "text": "Reply with exactly: CLINE-OK"}], "ts": 1790017816235},
+    {"id": "msg_2", "role": "assistant", "content": [{"type": "text", "text": "CLINE-OK"}], "ts": 1790017816300, "metrics": {"inputTokens": 5725, "outputTokens": 24, "cacheReadTokens": 0, "cacheWriteTokens": 0}}
+  ]
+}

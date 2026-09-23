@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "session_id": "1790017816235_k9ukm",
+  "source": "cli",
+  "started_at": "2026-09-21T19:10:16.235Z",
+  "ended_at": "2026-09-21T19:10:20.000Z",
+  "status": "completed",
+  "provider": "cline",
+  "model": "deepseek-v4.1-flash",
+  "metadata": {
+    "usage": {"inputTokens": 5725, "outputTokens": 24, "cacheReadTokens": 0, "cacheWriteTokens": 0, "totalCost": 0},
+    "aggregateUsage": {"inputTokens": 5725, "outputTokens": 24, "cacheReadTokens": 0, "cacheWriteTokens": 0, "totalCost": 0}
+  }
+}

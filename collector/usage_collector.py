@@ -85,6 +85,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -96,6 +97,7 @@ from pathlib import Path
 SCHEMA_VERSION = 2
 TIMEOUT_S = 8.0
 USER_AGENT = "tmos-usage-collector/0.1 (+shell/plugins/tmos.usage)"
+
 
 def _default_state_dir() -> Path:
     """Where the cache lives.
@@ -123,6 +125,7 @@ def configure_paths(state_dir: str | None = None) -> Path:
         STATE_DIR = Path(os.path.expanduser(state_dir))
         CACHE_PATH = STATE_DIR / "usage.json"
     return CACHE_PATH
+
 
 WINDOW_ORDER = {"5h": 0, "week": 1, "month": 2}
 
@@ -780,16 +783,24 @@ def _json_safe(contribution: dict) -> dict:
 
 
 def _scan_transcripts(
-    base: Path, now: datetime, contribution, state_dir: Path | None = None
+    base: Path,
+    now: datetime,
+    contribution,
+    state_dir: Path | None = None,
+    pattern: str = "*.jsonl",
 ) -> tuple[list[dict], dict]:
-    """Per-file contributions for files touched inside the window, reusing the cache."""
+    """Per-file contributions for files touched inside the window, reusing the cache.
+
+    `pattern` is the file kind a provider keeps its history in: JSONL rollouts for Claude, Codex and
+    Command Code, plain JSON documents for Cline.
+    """
     cache = _load_stats_cache(state_dir)
     entries = cache["files"]
     cutoff = (now - timedelta(days=STATS_DAYS)).timestamp()
     out: list[dict] = []
     seen: set[str] = set()
     scanned = cached = 0
-    for path in _recent_files(base, "*.jsonl", cutoff):
+    for path in _recent_files(base, pattern, cutoff):
         key = str(path)
         seen.add(key)
         try:
@@ -1134,6 +1145,223 @@ def scan_codex_stats(
     return stats.finish(now)
 
 
+def _command_code_contribution(path: Path, now: datetime) -> dict:
+    """One Command Code rollout's day/model contribution.
+
+    Command Code writes one JSONL per session under `~/.commandcode/projects/<slug>/`: a `session`
+    row, then `message` rows, the assistant ones carrying
+    `usage.{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}` and a `model`. Its cache
+    counters sit beside the input count the way Anthropic reports them, so a reply's total is the
+    sum of the four and the cache tokens keep buckets of their own.
+
+    `<uuid>.checkpoints.jsonl` sits next to a rollout and carries no usage at all, so it
+    contributes nothing: a file that measured nothing must not create a day.
+    """
+    if ".checkpoints." in path.name:
+        return {"days": {}, "models": {}}
+    stats = _Stats("")
+    session = path.name.split(".")[0]
+    for row in _jsonl_rows(path):
+        when = _parse_iso(row.get("timestamp"))
+        if when is None:
+            continue
+        raw_message = row.get("message")
+        message = raw_message if isinstance(raw_message, dict) else {}
+        raw_usage = row.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else None
+        if usage is not None:
+            bucket = {
+                "input_tokens": _num(usage.get("inputTokens")) or 0,
+                "output_tokens": _num(usage.get("outputTokens")) or 0,
+                "cache_read_tokens": _num(usage.get("cacheReadTokens")) or 0,
+                "cache_write_tokens": _num(usage.get("cacheWriteTokens")) or 0,
+            }
+            bucket["total_tokens"] = _int(sum(bucket.values()))
+            stats.add_tokens(when, session, row.get("model"), bucket, bucket["total_tokens"])
+        if str(message.get("role")) == "user":
+            stats.add_prompt(when, session)
+    return {"days": stats.days, "models": stats.models}
+
+
+def scan_command_code_stats(
+    now: datetime | None = None,
+    root: Path | str | None = None,
+    state_dir: Path | None = None,
+) -> dict:
+    now = now or _now()
+    base = Path(root) if root else Path(os.path.expanduser("~/.commandcode/projects"))
+    parts, scan = _scan_transcripts(base, now, _command_code_contribution, state_dir)
+    stats = _absorb(parts, now)
+    stats.source = "~/.commandcode/projects"
+    stats.scan = scan
+    return stats.finish(now)
+
+
+def _opencode_db_path() -> Path:
+    override = (os.environ.get("OPENCODE_DB") or "").strip()
+    if override:
+        return Path(os.path.expanduser(override))
+    return Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
+
+
+def _stat_signature(paths: list[Path]) -> str:
+    """A cache key that also moves when a SQLite WAL moves.
+
+    A write lands in `-wal` long before the main database file's mtime changes, so a signature over
+    the database alone would serve a stale read for as long as the WAL lives. `-shm` is deliberately
+    NOT part of the signature: it is the shared-memory index and SQLite touches it even on a
+    read-only open, which would make every read look like a change and defeat the cache.
+    """
+    parts = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except OSError:
+            parts.append(f"{path.name}:absent")
+            continue
+        parts.append(f"{path.name}:{info.st_size}:{_int(info.st_mtime)}")
+    return "|".join(parts)
+
+
+def _opencode_contribution(path: Path, now: datetime) -> dict:
+    """OpenCode's own database, read read-only: tokens and model per assistant reply.
+
+    OpenCode keeps sessions in SQLite rather than in transcripts, and `message.data` is a JSON
+    blob per message: assistant rows carry
+    `tokens.{total,input,output,reasoning,cache.read,cache.write}` and a `modelID`, while the user
+    rows are the prompts. The provider's own `total` is used as given rather than re-derived.
+
+    Opened `mode=ro`: a running OpenCode holds the write lock and a WAL, and this never writes to
+    the database. A row whose JSON does not parse is skipped, never guessed at.
+    """
+    stats = _Stats("")
+    cutoff_ms = _int((now - timedelta(days=STATS_DAYS)).timestamp() * 1000)
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)  # read-only; never writes
+    try:
+        for session_id, created, data in con.execute(
+            "SELECT session_id, time_created, data FROM message WHERE time_created >= ?",
+            (cutoff_ms,),
+        ):
+            when = _from_epoch(created, "ms")
+            if when is None:
+                continue
+            try:
+                payload = json.loads(data)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            session = str(session_id or "")
+            raw_tokens = payload.get("tokens")
+            tokens = raw_tokens if isinstance(raw_tokens, dict) else None
+            model = payload.get("modelID")
+            if not isinstance(model, str) or not model:
+                raw_model = payload.get("model")
+                model = raw_model.get("modelID") if isinstance(raw_model, dict) else None
+            if tokens is not None:
+                raw_cache = tokens.get("cache")
+                cache = raw_cache if isinstance(raw_cache, dict) else {}
+                bucket = {
+                    "input_tokens": _num(tokens.get("input")) or 0,
+                    "output_tokens": _num(tokens.get("output")) or 0,
+                    "cache_read_tokens": _num(cache.get("read")) or 0,
+                    "cache_write_tokens": _num(cache.get("write")) or 0,
+                }
+                total = _int(tokens.get("total")) or _int(sum(bucket.values()))
+                bucket["total_tokens"] = total
+                stats.add_tokens(when, session, model, bucket, total)
+            if str(payload.get("role")) == "user":
+                stats.add_prompt(when, session)
+    finally:
+        con.close()
+    return {"days": stats.days, "models": stats.models}
+
+
+def scan_opencode_stats(
+    now: datetime | None = None,
+    root: Path | str | None = None,
+    state_dir: Path | None = None,
+) -> dict:
+    """OpenCode history, cached on the database's own signature with its WAL included."""
+    now = now or _now()
+    db = Path(root) if root else _opencode_db_path()
+    if not db.is_file():
+        return _no_stats(
+            "",
+            {},
+            f"OpenCode keeps its sessions in {db}, which does not exist on this machine",
+        )
+    cache = _load_stats_cache(state_dir)
+    key = str(db)
+    signature = _stat_signature([db, Path(f"{db}-wal")])
+    entry = cache["files"].get(key)
+    if isinstance(entry, dict) and entry.get("signature") == signature:
+        contribution = entry
+        scan = {"files_scanned": 0, "files_cached": 1}
+    else:
+        contribution = _json_safe(_opencode_contribution(db, now))
+        contribution["signature"] = signature
+        cache["files"][key] = contribution
+        _save_stats_cache(cache, state_dir)
+        scan = {"files_scanned": 1, "files_cached": 0}
+    stats = _absorb([contribution], now)
+    stats.source = "~/.local/share/opencode/opencode.db"
+    stats.scan = scan
+    return stats.finish(now)
+
+
+def _cline_contribution(path: Path, now: datetime) -> dict:
+    """One Cline session's day/model contribution.
+
+    Cline writes two files per session: `<id>.json` (the run — provider, model, `started_at`, and a
+    token rollup under `metadata.aggregateUsage`) and `<id>.messages.json` (the transcript, whose
+    per-message `metrics` carry the same counters). The session file is the one that names the
+    model, so it is the source here and its aggregate is taken exactly once: reading both files
+    would count every reply twice.
+
+    Cline records no prompt count, so none is claimed — a field it does not keep stays absent
+    rather than being estimated.
+    """
+    if ".messages." in path.name:
+        return {"days": {}, "models": {}}
+    document = read_json(path)
+    if not isinstance(document, dict):
+        return {"days": {}, "models": {}}
+    when = _parse_iso(document.get("started_at"))
+    if when is None:
+        return {"days": {}, "models": {}}
+    raw_metadata = document.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_usage = metadata.get("aggregateUsage") or metadata.get("usage")
+    usage = raw_usage if isinstance(raw_usage, dict) else {}
+    bucket = {
+        "input_tokens": _num(usage.get("inputTokens")) or 0,
+        "output_tokens": _num(usage.get("outputTokens")) or 0,
+        "cache_read_tokens": _num(usage.get("cacheReadTokens")) or 0,
+        "cache_write_tokens": _num(usage.get("cacheWriteTokens")) or 0,
+    }
+    bucket["total_tokens"] = _int(sum(bucket.values()))
+    stats = _Stats("")
+    session = str(document.get("session_id") or path.stem)
+    stats.add_tokens(when, session, document.get("model"), bucket, bucket["total_tokens"])
+    return {"days": stats.days, "models": stats.models}
+
+
+def scan_cline_stats(
+    now: datetime | None = None,
+    root: Path | str | None = None,
+    state_dir: Path | None = None,
+) -> dict:
+    """Cline history, from its session documents (`.messages.json` siblings are ignored)."""
+    now = now or _now()
+    base = Path(root) if root else Path(os.path.expanduser("~/.cline/data/sessions"))
+    parts, scan = _scan_transcripts(base, now, _cline_contribution, state_dir, "*.json")
+    stats = _absorb(parts, now)
+    stats.source = "~/.cline/data/sessions"
+    stats.scan = scan
+    return stats.finish(now)
+
+
 def _has_window(limits: dict) -> bool:
     """A reading TMOS can actually use: at least one window carrying a percentage."""
     for key in ("primary", "secondary"):
@@ -1200,16 +1428,18 @@ def codex_local_rate_limits(
     }
 
 
-STATS_SCANNERS = {"claude-code": scan_claude_stats, "codex": scan_codex_stats}
-
-NO_LOCAL_TRANSCRIPT = {
-    "clinepass": "Cline keeps its sessions in ~/.cline/data/db, which TMOS does not read, so there "
-    "is no token history to show",
-    "command-code": "Command Code keeps no token transcript in a format TMOS reads, so there is no "
-    "token history to show",
-    "opencode-go": "OpenCode keeps its sessions in ~/.local/share/opencode/opencode.db, which TMOS "
-    "does not read, so there is no token history to show",
+STATS_SCANNERS = {
+    "claude-code": scan_claude_stats,
+    "codex": scan_codex_stats,
+    "command-code": scan_command_code_stats,
+    "opencode-go": scan_opencode_stats,
+    "clinepass": scan_cline_stats,
 }
+
+# Providers TMOS reads no history for. Empty today: all five keep something readable, and this stays
+# as the honest fallback — a provider with no local history must say so rather than draw an empty
+# chart, and a provider added later lands here until its reader exists.
+NO_LOCAL_TRANSCRIPT: dict[str, str] = {}
 
 
 def stats_for(provider: str, now: datetime | None = None) -> dict:
@@ -1694,7 +1924,7 @@ def _selftest() -> int:
         target = Path(tempfile.mkdtemp(prefix="tmos-usage-fixture-")) / provider
         target.mkdir(parents=True)
         source = transcripts / provider
-        for path in [source / only] if only else sorted(source.glob("*.jsonl")):
+        for path in [source / only] if only else sorted(p for p in source.glob("*") if p.is_file()):
             shutil.copy2(path, target / path.name)
             os.utime(target / path.name, (now.timestamp(), now.timestamp()))
         scratch.append(target.parent)
@@ -1750,6 +1980,106 @@ def _selftest() -> int:
         and codex["models"]["gpt-6-sol"]["cache_read_tokens"] == 400,
         str(codex["models"]),
     )
+
+    command = _command_code_contribution(transcripts / "command-code" / "aaaa-bbbb.jsonl", now)
+    command_tokens = sum(row["tokens"] for row in command["days"].values())
+    check("command-code rollout: reply usage summed, prompts counted from user rows",
+          command_tokens == 1820
+          and sum(row["prompts"] for row in command["days"].values()) == 1,
+          str(command))
+    check("command-code rollout: input/output/cache buckets stay separate",
+          command["models"]["deepseek/deepseek-v4-flash"]["input_tokens"] == 1200
+          and command["models"]["deepseek/deepseek-v4-flash"]["cache_read_tokens"] == 500
+          and command["models"]["deepseek/deepseek-v4-flash"]["total_tokens"] == 1820,
+          str(command["models"]))
+    check("negative control: a checkpoints file contributes no day and no model",
+          _command_code_contribution(
+              transcripts / "command-code" / "aaaa-bbbb.checkpoints.jsonl", now
+          ) == {"days": {}, "models": {}}, "")
+
+    command_tree = staged("command-code")
+    command_stats = scan_command_code_stats(now, command_tree, command_tree.parent / "state")
+    check("command-code scan: end-to-end history from a rollout tree",
+          command_stats["available"] and command_stats["totals"]["tokens"] == 1820
+          and command_stats["totals"]["prompts"] == 1
+          and command_stats["totals"]["sessions"] == 1
+          and command_stats["models"][0]["id"] == "deepseek/deepseek-v4-flash",
+          str(command_stats))
+
+    # OpenCode keeps its sessions in SQLite. The fixture is built here rather than committed as a
+    # binary blob, so the reader is proven against the real table shape.
+    opencode_db = Path(tempfile.mkdtemp(prefix="tmos-usage-opencode-")) / "opencode.db"
+    scratch.append(opencode_db.parent)
+    con = sqlite3.connect(str(opencode_db))
+    con.execute(
+        "CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, "
+        "time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)"
+    )
+    stamp = _int(now.timestamp() * 1000)
+    con.execute(
+        "INSERT INTO message VALUES (?,?,?,?,?)",
+        ("m1", "ses_1", stamp, stamp, json.dumps({"role": "user"})),
+    )
+    con.execute(
+        "INSERT INTO message VALUES (?,?,?,?,?)",
+        (
+            "m2",
+            "ses_1",
+            stamp,
+            stamp,
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "modelID": "gpt-5-nano",
+                    "tokens": {
+                        "total": 11882,
+                        "input": 11651,
+                        "output": 42,
+                        "reasoning": 189,
+                        "cache": {"read": 100, "write": 0},
+                    },
+                }
+            ),
+        ),
+    )
+    con.execute(
+        "INSERT INTO message VALUES (?,?,?,?,?)",
+        ("m3", "ses_1", stamp, stamp, json.dumps({"role": "assistant", "tokens": None})),
+    )
+    con.commit()
+    con.close()
+    opencode = scan_opencode_stats(now, opencode_db, opencode_db.parent / "state")
+    check("opencode: the provider's own token total is used, not re-derived",
+          opencode["available"] and opencode["totals"]["tokens"] == 11882, str(opencode))
+    check("opencode: user rows are prompts, and a reply with no tokens invents nothing",
+          opencode["totals"]["prompts"] == 1 and opencode["totals"]["active_days"] == 1,
+          str(opencode))
+    check("opencode: model and cache buckets read from the message payload",
+          opencode["models"][0]["id"] == "gpt-5-nano"
+          and opencode["models"][0]["cache_read_tokens"] == 100,
+          str(opencode["models"]))
+    check("opencode: a second read of an unchanged database is served from the cache",
+          scan_opencode_stats(now, opencode_db, opencode_db.parent / "state")["scan"]["files_cached"] == 1,
+          "the WAL-aware signature must stay stable across reads")
+
+    cline = _cline_contribution(transcripts / "clinepass" / "1790017816235_k9ukm.json", now)
+    cline_tokens = sum(row["tokens"] for row in cline["days"].values())
+    check("cline session: the usage rollup is taken once, not summed with its aggregate twin",
+          cline_tokens == 5749, f"got {cline_tokens}; summing usage + aggregateUsage would give 11498")
+    check("cline session: model named, and no prompt count is claimed for a field it lacks",
+          cline["models"]["deepseek-v4.1-flash"]["total_tokens"] == 5749
+          and not any(row["prompts"] for row in cline["days"].values()), str(cline))
+    check("negative control: a Cline transcript file contributes nothing, so nothing double counts",
+          _cline_contribution(
+              transcripts / "clinepass" / "1790017816235_k9ukm.messages.json", now
+          ) == {"days": {}, "models": {}}, "")
+
+    cline_tree = staged("clinepass")
+    cline_stats = scan_cline_stats(now, cline_tree, cline_tree.parent / "state")
+    check("cline scan: end-to-end history from a session directory",
+          cline_stats["available"] and cline_stats["totals"]["tokens"] == 5749
+          and cline_stats["totals"]["sessions"] == 1,
+          str(cline_stats))
 
     codex_tree = staged("codex")
     limits = codex_local_rate_limits(now, codex_tree)
@@ -1822,12 +2152,17 @@ def _selftest() -> int:
         not quiet_limits["windows"],
         str(quiet_limits),
     )
-    cline = stats_for("clinepass")
+    # Every shipped provider now has a reader, so the fallback is proven with an id that has none:
+    # a provider TMOS cannot read must say so, never draw an empty chart.
+    unreadable = stats_for("no-such-provider")
     check(
-        "negative control: a provider with no readable transcript names the reason",
-        (not cline["available"]) and "db" in cline["note"] and not cline["models"],
-        str(cline),
+        "negative control: a provider with no reader names the reason and claims no history",
+        (not unreadable["available"])
+        and unreadable["note"] == "no local transcript"
+        and not unreadable["models"],
+        str(unreadable),
     )
+
 
     for path in scratch:
         try:
