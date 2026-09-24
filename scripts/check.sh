@@ -20,6 +20,11 @@ PY=${PYTHON:-python3}
 QMLLINT=${QMLLINT:-$(command -v qmllint || echo /usr/lib/qt6/bin/qmllint)}
 rc=0
 
+echo "== request-log importer: offline accounting and privacy checks"
+"$PY" -m unittest discover -s collector -p 'test_request_log_import.py' || rc=1
+echo "== subscription ranking: shared model checks"
+node scripts/test-value.cjs || rc=1
+
 echo "== collector: fixture selftest (offline)"
 "$PY" collector/usage_collector.py --selftest
 self_rc=$?

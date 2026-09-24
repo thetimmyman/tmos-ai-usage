@@ -280,6 +280,12 @@ MIT — see `LICENSE`.
 
 ## Inference economics: request-log import (PS-679 preview)
 
+The planned [Inference X-RAY view](INFERENCE-XRAY.md) is an upgrade to this plugin:
+Overview first, then subscriptions ranked #1, #2, #3 by validated tasks per dollar.
+It will use native Omarchy theme tokens and retain this repository and marketplace
+identity. The linked design records comparison semantics and the release work still
+needed; the native dashboard is not released yet.
+
 An offline importer is available for OpenCode's `request-logs-*.json` exports:
 
 ```sh

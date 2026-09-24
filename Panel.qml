@@ -6,7 +6,7 @@
 // The data stays in BarWidget.qml (one UsageSource, one clock), and this file reads it back through
 // `hostWidget`, so nothing is collected or watched twice.
 //
-// Layout rule this file exists to keep: EVERY subscription is on the first page, in the same order,
+// Layout rule: EVERY subscription is on the first page, in the shared economic ranking order,
 // with no switcher. A row expands underneath itself for depth; opening one never hides another.
 //
 // Every colour, size and font here is a qs.Commons token (gate N3), and tone names come from
@@ -290,7 +290,7 @@ Ui.Panel {
                                             anchors.rightMargin: Style.spacing.sm
                                             anchors.verticalCenter: parent.verticalCenter
                                             textFormat: Text.PlainText
-                                            text: providerRow.provider.name + (providerRow.provider.plan ? ("  " + providerRow.provider.plan) : "")
+                                            text: providerRow.provider.valueLabel + " · " + providerRow.provider.name + (providerRow.provider.plan ? ("  " + providerRow.provider.plan) : "")
                                             color: root.foreground
                                             font.family: root.fontFamily
                                             font.pixelSize: Style.font.body

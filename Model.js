@@ -20,6 +20,7 @@
 // importers at all — the linter reports the module's whole public surface as unused because it
 // cannot see across the QML boundary (it also reports `.pragma library` itself as a parse error).
 .pragma library
+.import "Value.js" as Value
 
 var WINDOW_LABEL = { "5h": "5h", "week": "Week", "month": "Month" }
 var WINDOW_ORDER = ["5h", "week", "month"]
@@ -61,7 +62,7 @@ function parseDocument(text) {
   observedAt = Date.parse(doc.observed_at || "") || 0
   rows = []
   for (i = 0; i < doc.providers.length; i++) rows.push(normalizeProvider(doc.providers[i], observedAt))
-  rows.sort((a, b) => a.name.localeCompare(b.name))
+  rows = Value.rankProviders(rows, doc.economics_context)
   return { ok: true, error: "", providers: rows, observedAt: observedAt, totals: normalizeTotals(doc.totals) }
 }
 
@@ -85,6 +86,7 @@ function normalizeProvider(rawRow, observedAtMs) {
   status = String(row.status || "unknown")
   return {
     id: id,
+    economics: row.economics || null,
     // A definition-based provider carries its own display name; a built-in never does, so this
     // leaves every built-in row exactly as it was and lets a definition name itself properly.
     name: PROVIDER_LABEL[id] || (row.label ? String(row.label) : id),
