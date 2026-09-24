@@ -44,6 +44,13 @@ Item {
     property string priceStatus: ""
     property var priceRequest: null
     property bool refreshQueued: false
+    property var taskReviews: []
+    property bool taskReviewTruncated: false
+    property int taskReviewUnavailable: 0
+    property bool taskReviewLoading: false
+    property string taskReviewError: ""
+    property bool taskReviewDeciding: false
+    property string taskReviewStatus: ""
     onRankingModeChanged: if (cachedText) apply(cachedText)
     property var providers: []
     // Document-level rollup (today's tokens across every subscription, how many reported).
@@ -91,6 +98,39 @@ Item {
             "--state-dir", root.stateDir, "--provider", provider, "--amount", String(n), "--cycle", cycle];
         priceWriter.running = true;
     }
+    function taskReviewPath() {
+        return Qt.resolvedUrl("collector/task_review.py").toString().replace(/^file:\/\//, "")
+    }
+    function refreshTaskReviews() {
+        if (taskReviewLoading || taskReviewDeciding) return;
+        taskReviewError = "";
+        taskReviewStatus = "";
+        taskReviewLoading = true;
+        taskReviewList.command = ["python3", taskReviewPath(), "list", "--state-dir", root.stateDir];
+        taskReviewList.running = true;
+    }
+    function decideTask(taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted) {
+        if (taskReviewDeciding || taskReviewLoading) return;
+        if (!taskRef || !reviewer || !expectedRun) {
+            taskReviewError = "A current task run and reviewer are required for this decision.";
+            return;
+        }
+        var command = ["python3", taskReviewPath(), "decide", "--state-dir", root.stateDir,
+            "--task-ref", taskRef, "--reviewer", reviewer, "--decision", decision,
+            "--expected-run", expectedRun];
+        if (decision === "accept") {
+            if (!expectedVerification || !semanticAccepted) {
+                taskReviewError = "Acceptance needs a successful current check and explicit semantic confirmation.";
+                return;
+            }
+            command.push("--expected-verification", expectedVerification, "--semantic-accepted");
+        }
+        taskReviewError = "";
+        taskReviewStatus = "";
+        taskReviewDeciding = true;
+        taskReviewDecision.command = command;
+        taskReviewDecision.running = true;
+    }
     QSIo.Process {
         id: priceWriter
         onExited: function(code) {
@@ -102,6 +142,52 @@ Item {
                     + request.amount.toFixed(2) + " / " + request.cycle + ".";
                 root.refresh();
             }
+        }
+    }
+    QSIo.Process {
+        id: taskReviewList
+        command: []
+        stdout: QSIo.StdioCollector { id: taskReviewListOut; waitForEnd: true }
+        onExited: function(code) {
+            root.taskReviewLoading = false;
+            if (code !== 0) {
+                root.taskReviewError = "Could not read the private task review list.";
+                root.taskReviews = [];
+                root.taskReviewTruncated = false;
+                root.taskReviewUnavailable = 0;
+                return;
+            }
+            try {
+                var response = JSON.parse(String(taskReviewListOut.text || ""));
+                if (response.schema_version !== 1 || !Array.isArray(response.tasks)) throw new Error("shape");
+                root.taskReviews = response.tasks.slice(0, 100);
+                root.taskReviewTruncated = response.truncated === true;
+                root.taskReviewUnavailable = typeof response.unavailable === "number" ? Math.max(0, Math.floor(response.unavailable)) : 0;
+            } catch (e) {
+                root.taskReviewError = "Task review returned an unreadable response.";
+                root.taskReviews = [];
+                root.taskReviewTruncated = false;
+                root.taskReviewUnavailable = 0;
+            }
+        }
+    }
+    QSIo.Process {
+        id: taskReviewDecision
+        command: []
+        stdout: QSIo.StdioCollector { id: taskReviewDecisionOut; waitForEnd: true }
+        onExited: function(code) {
+            root.taskReviewDeciding = false;
+            var response = null;
+            try { response = JSON.parse(String(taskReviewDecisionOut.text || "")); } catch (e) {}
+            if (code !== 0 || !response || response.ok !== true) {
+                root.taskReviewError = response && (response.error || response.reason)
+                    ? String(response.error || response.reason).slice(0, 180)
+                    : "Task decision could not be recorded; refresh the review list.";
+                return;
+            }
+            root.refreshTaskReviews();
+            root.taskReviewStatus = "Recorded explicit decision: " + String(response.status || "updated") + ".";
+            root.refresh();
         }
     }
 

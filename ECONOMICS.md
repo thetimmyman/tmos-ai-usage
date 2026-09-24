@@ -64,18 +64,34 @@ are retained. No Odysseus installation is required.
 
 ## Reports
 
-- Command Code: billing-period usage-summary API, refreshed with quota collection.
-  Counts completed/failed requests, input/output tokens and credits. Credits are
-  not subscription cash spend. A report failure retains the quota reading.
-- Cline: cursor-paginated recent usage, up to 1,000 unique records per refresh. Repeated pages and later-page failures retain explicit partial coverage.
-  Token categories remain separate. Despite the field name `costUsd`, observed
-  values require unit verification; the UI does not present them as USD.
+- Command Code: the current billing-period usage summary endpoint reports
+  aggregate request counts, token totals and credits; it is not a per-request
+  history export. The public Studio docs describe request-level details in the
+  UI, but do not document a personal usage export API. Credits are not
+  subscription cash spend. A report failure retains the quota reading.
+- Cline: the authenticated account's cursor-paginated `/users/{id}/usages`
+  route is read in batches of at most 100 records, ten pages per refresh. A
+  private checkpoint resumes the walk on later refreshes and merges by hashed
+  record ID. Repeated cursors, storage limits and later-page failures remain
+  visibly partial. Reaching the endpoint's end is not proof of complete
+  provider retention or a complete comparison period. Only token categories
+  and model names are retained. Despite the field name `costUsd`, observed
+  values require unit verification; the UI does not present them as USD. The
+  usage-limit and detail routes are not documented as a stable public personal
+  reporting API, so future API changes can make this report unavailable.
 - OpenCode: import the Console JSON export with the command below. Requests are
   deduplicated by workspace and row identity, credentials and raw metadata are
   excluded, and truncation/time coverage remain visible. The Console organization
-  CSV API uses a separate service-account credential; the optional adapter is described below.
-- Claude/Codex: existing local token collectors and quota adapters. Organization
-  billing APIs are not substituted for personal subscription reports.
+  CSV API uses a separate service-account credential; the optional adapter is
+  described below. It reports organization-wide workspace activity, which may
+  include other members, products and web-search charges; it does not represent
+  personal OpenCode Go subscription usage or cash spend.
+- Claude Code/Codex personal subscriptions: local transcript collectors are
+  the request-activity source, alongside first-party OAuth quota readings.
+  Anthropic's Admin Usage/Cost Reports and OpenAI's Platform Usage API/CSV
+  describe API organizations, not Claude Pro/Max or ChatGPT/Codex personal-plan
+  usage. They are not substituted for these personal reports. ChatGPT account
+  data export is a manual privacy export, not a documented live usage API.
 
 ```bash
 python3 collector/request_log_import.py ~/Downloads/request-logs-2026-09-24.json \
@@ -173,6 +189,13 @@ starts at midnight UTC. It labels workspace scope and converts microcents using
 not evidence of a free subscription. API/report failures do not erase quota data.
 
 Reference: https://opencode.ai/v2/docs/console/usage/
+
+Provider distinctions: [Command Code Studio](https://commandcode.ai/docs/studio),
+[Cline API overview](https://docs.cline.bot/api/overview),
+[Anthropic Admin Usage API](https://docs.anthropic.com/en/api/admin-api/usage-cost/get-messages-usage-report),
+[OpenAI Platform Usage API](https://platform.openai.com/docs/api-reference/usage/completions),
+[ChatGPT data export](https://help.openai.com/en/articles/7260999-how-do-i-export-my-chatgpt-history-and-data),
+and [Codex/Work usage and Personal Analytics](https://help.openai.com/en/articles/20001478-reviewing-work-and-codex-usage-and-using-personal-analytics-in-chatgpt-desktop).
 
 ## Invoice history and service-period expense
 

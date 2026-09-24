@@ -95,6 +95,7 @@ fi
 if command -v quickshell >/dev/null 2>&1 && [ -d /usr/share/omarchy/shell/Commons ]; then
     bash scripts/test-xray.sh || rc=1
     bash scripts/test-price-save.sh || rc=1
+    bash scripts/test-task-review.sh || rc=1
 else
     echo "SKIP native runtime: requires Quickshell and Omarchy"
 fi

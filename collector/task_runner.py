@@ -19,6 +19,12 @@ import uuid
 import outcome_ledger
 
 
+def _label(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 120 or any(ord(c) < 32 for c in value):
+        raise ValueError("label must contain 1–120 printable characters")
+    return value.strip()
+
+
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
@@ -69,7 +75,7 @@ def _atomic(path, raw):
             os.unlink(temporary)
 
 
-def _locked(directory, key):
+def _locked(directory, key, blocking=True):
     path = directory / "locks" / (key + ".lock")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
@@ -78,7 +84,11 @@ def _locked(directory, key):
         os.close(fd)
         raise ValueError("task lock must be a regular file")
     os.fchmod(fd, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+    except BaseException:
+        os.close(fd)
+        raise
     return fd
 
 
@@ -141,7 +151,8 @@ def _execute(argv):
         return None, started, _stamp(), type(exc).__name__
 
 
-def run_task(state_dir, provider, cohort, task_id, argv, artifact=None):
+def run_task(state_dir, provider, cohort, task_id, argv, artifact=None, label=None):
+    if label is not None: label = _label(label)
     if not argv:
         raise ValueError("run requires a command after --")
     ledger, directory, key = _paths(state_dir, task_id)
@@ -165,6 +176,8 @@ def run_task(state_dir, provider, cohort, task_id, argv, artifact=None):
         execution_id = str(uuid.uuid4())
         meta_path = _meta_path(directory, key)
         meta = _read_meta(meta_path, task_id)
+        if label is not None:
+            meta["label"] = _label(label)
         started = _stamp()
         receipt = {"kind": "run", "task_id": task_id, "execution_id": execution_id,
                    "argv_sha256": _hash(_json(list(argv))), "started_at": started,
@@ -198,7 +211,8 @@ def run_task(state_dir, provider, cohort, task_id, argv, artifact=None):
         os.close(fd)
 
 
-def verify_task(state_dir, task_id, reviewer, argv):
+def verify_task(state_dir, task_id, reviewer, argv, check_label=None):
+    if check_label is not None: check_label = _label(check_label)
     if not isinstance(reviewer, str) or not reviewer.strip():
         raise ValueError("verify requires a reviewer identity")
     if not argv:
@@ -238,6 +252,8 @@ def verify_task(state_dir, task_id, reviewer, argv):
                   "ended_at": ended, "exit_code": exit_code, "launch_error": launch_error,
                   "artifact_sha256": before_hash, "artifact_bound": bool(execution.get("artifact_bound")),
                   "artifact_unchanged": before_hash == after_hash if execution.get("artifact_bound") else None}
+        if check_label is not None:
+            record["check_label"] = _label(check_label)
         record["verification_sha256"] = _hash(_json(record))
         _atomic(directory / ("verification-" + record["verification_sha256"] + ".json"), _json(record))
         meta.update(latest_verification=record, acceptance=None)
@@ -247,12 +263,12 @@ def verify_task(state_dir, task_id, reviewer, argv):
         os.close(fd)
 
 
-def accept_task(state_dir, task_id, reviewer):
+def accept_task(state_dir, task_id, reviewer, expected_run=None, expected_verification=None):
     if not isinstance(reviewer, str) or not reviewer.strip():
         raise ValueError("accept requires a reviewer identity")
     reviewer = reviewer.strip()
     ledger, directory, key = _paths(state_dir, task_id)
-    fd = _locked(directory, key)
+    fd = _locked(directory, key, blocking=expected_run is None)
     try:
         meta_path = _meta_path(directory, key)
         meta = _read_meta(meta_path, task_id)
@@ -263,6 +279,10 @@ def accept_task(state_dir, task_id, reviewer):
             raise ValueError("acceptance requires a registered pending task")
         execution = meta.get("latest_execution")
         verification = meta.get("latest_verification")
+        if expected_run is not None and (not execution or execution.get("execution_id") != expected_run):
+            raise ValueError("task changed since review; reload the review queue")
+        if expected_verification is not None and (not verification or verification.get("verification_sha256") != expected_verification):
+            raise ValueError("verification changed since review; reload the review queue")
         if (not execution or execution.get("status") != "complete" or execution.get("launch_error")
                 or execution.get("artifact_error") or not verification
                 or verification.get("execution_id") != execution.get("execution_id")
@@ -328,17 +348,29 @@ def accept_task(state_dir, task_id, reviewer):
         os.close(fd)
 
 
-def finalize_task(state_dir, task_id, status):
+def finalize_task(state_dir, task_id, status, expected_run=None, reviewer=None):
     if status not in ("failed", "abandoned"):
         raise ValueError("explicit final status must be failed or abandoned")
     ledger, directory, key = _paths(state_dir, task_id)
-    fd = _locked(directory, key)
+    fd = _locked(directory, key, blocking=expected_run is None)
     try:
+        if expected_run is not None:
+            meta = _read_meta(_meta_path(directory, key), task_id)
+            execution = meta.get("latest_execution")
+            if not execution or execution.get("execution_id") != expected_run:
+                raise ValueError("task changed since review; reload the review queue")
         task = _load_task(ledger, task_id)
         if task is None or task["status"] != "pending":
             raise ValueError("explicit finalization requires a registered pending task")
         at = max(_stamp(), task["last_event_at"])
-        outcome_ledger.ingest(ledger, [_event(task_id, "task_finalized", status=status, occurred_at=at)])
+        event = _event(task_id, "task_finalized", status=status, occurred_at=at)
+        if reviewer is not None:
+            reviewer = _label(reviewer)
+            decision = {"task_id":task_id, "event_id":event["event_id"], "reviewer":reviewer,
+                        "status":status, "execution_id":expected_run, "decided_at":at}
+            # Retain intent before the ledger mutation; the event ID proves whether it applied.
+            _atomic(directory / ("decision-" + event["event_id"] + ".json"), _json(decision))
+        outcome_ledger.ingest(ledger, [event])
         return {"status": status}
     finally:
         os.close(fd)
@@ -353,9 +385,10 @@ def main(argv=None):
     run = sub.add_parser("run", help="record a pending CLI task and run argv without a shell")
     common(run); run.add_argument("--provider", required=True, choices=sorted(outcome_ledger.PROVIDERS))
     run.add_argument("--cohort", required=True); run.add_argument("--artifact", help="optional output file to hash-bind through verification")
+    run.add_argument("--label", help="short private task label for the review queue")
     run.add_argument("command", nargs=argparse.REMAINDER)
     verify = sub.add_parser("verify", help="run one explicit check for the latest task execution")
-    common(verify); verify.add_argument("--reviewer", required=True); verify.add_argument("command", nargs=argparse.REMAINDER)
+    common(verify); verify.add_argument("--reviewer", required=True); verify.add_argument("--check-label", help="short description of the check being run"); verify.add_argument("command", nargs=argparse.REMAINDER)
     accept = sub.add_parser("accept", help="attest semantic acceptance after successful checks")
     common(accept); accept.add_argument("--reviewer", required=True)
     for action in ("fail", "abandon"):
@@ -365,12 +398,12 @@ def main(argv=None):
     try:
         if args.action == "run":
             command = args.command[1:] if args.command[:1] == ["--"] else args.command
-            result = run_task(args.state_dir, args.provider, args.cohort, args.task_id, command, args.artifact)
+            result = run_task(args.state_dir, args.provider, args.cohort, args.task_id, command, args.artifact, args.label)
             print(json.dumps(result, sort_keys=True))
             return result["exit_code"] if result["exit_code"] is not None else 127
         if args.action == "verify":
             command = args.command[1:] if args.command[:1] == ["--"] else args.command
-            result = verify_task(args.state_dir, args.task_id, args.reviewer, command)
+            result = verify_task(args.state_dir, args.task_id, args.reviewer, command, args.check_label)
             print(json.dumps(result, sort_keys=True))
             return result["exit_code"] if result["exit_code"] is not None else 127
         if args.action == "accept":

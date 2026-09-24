@@ -173,8 +173,19 @@ Ui.Panel {
                 priceStatus: root.hostWidget ? root.hostWidget.usageSource.priceStatus : ""
                 priceError: root.hostWidget ? root.hostWidget.usageSource.priceError : ""
                 savingPrice: root.hostWidget ? root.hostWidget.usageSource.savingPrice : false
+                taskReviews: root.hostWidget ? root.hostWidget.usageSource.taskReviews : []
+                taskReviewTruncated: root.hostWidget ? root.hostWidget.usageSource.taskReviewTruncated : false
+                taskReviewUnavailable: root.hostWidget ? root.hostWidget.usageSource.taskReviewUnavailable : 0
+                taskReviewLoading: root.hostWidget ? root.hostWidget.usageSource.taskReviewLoading : false
+                taskReviewDeciding: root.hostWidget ? root.hostWidget.usageSource.taskReviewDeciding : false
+                taskReviewError: root.hostWidget ? root.hostWidget.usageSource.taskReviewError : ""
+                taskReviewStatus: root.hostWidget ? root.hostWidget.usageSource.taskReviewStatus : ""
                 onModeSelected: function(mode) { if (root.hostWidget) root.hostWidget.usageSource.rankingMode = mode }
                 onPriceSaved: function(provider, amount, cycle) { if (root.hostWidget) root.hostWidget.usageSource.savePrice(provider, amount, cycle) }
+                onTaskReviewsRequested: if (root.hostWidget) root.hostWidget.usageSource.refreshTaskReviews()
+                onTaskDecisionRequested: function(taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted) {
+                    if (root.hostWidget) root.hostWidget.usageSource.decideTask(taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted)
+                }
             }
             ScrollView {
                 visible: !root.xray

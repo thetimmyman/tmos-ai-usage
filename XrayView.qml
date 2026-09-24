@@ -15,9 +15,19 @@ Rectangle {
     signal backRequested()
     signal modeSelected(string mode)
     signal priceSaved(string provider, string amount, string cycle)
+    signal taskReviewsRequested()
+    signal taskDecisionRequested(string taskRef, string reviewer, string decision,
+                                 string expectedRun, string expectedVerification, bool semanticAccepted)
     property string priceError: ""
     property string priceStatus: ""
     property bool savingPrice: false
+    property var taskReviews: []
+    property bool taskReviewTruncated: false
+    property int taskReviewUnavailable: 0
+    property bool taskReviewLoading: false
+    property bool taskReviewDeciding: false
+    property string taskReviewError: ""
+    property string taskReviewStatus: ""
     property bool showImportHelp: false
     readonly property bool activityMode: providers.length ? providers[0].rankingMetric === 'activity' : true
     readonly property var selected: providers.filter(p => p.id === selectedId)[0] || null
@@ -564,6 +574,22 @@ Rectangle {
                     }
                 }
                 Label { width: parent.width; color: root.secondary; text: root.selected && root.selected.outcomes.available ? "Observed ledger events are incomplete population coverage. Unrecorded tasks may be missing; these counts do not assert complete coverage." : "No outcome ledger summary is available. Record task lifecycle and turn events with outcome_ledger.py, then refresh the usage report. No counts are inferred from request success." }
+                TaskReview {
+                    width: parent.width
+                    visible: root.selected !== null
+                    provider: root.selected ? root.selected.id : ""
+                    tasks: root.taskReviews
+                    truncated: root.taskReviewTruncated
+                    unavailableCount: root.taskReviewUnavailable
+                    loading: root.taskReviewLoading
+                    deciding: root.taskReviewDeciding
+                    errorText: root.taskReviewError
+                    statusText: root.taskReviewStatus
+                    onRefreshRequested: root.taskReviewsRequested()
+                    onDecisionRequested: function(taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted) {
+                        root.taskDecisionRequested(taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted)
+                    }
+                }
             }
         }
     }

@@ -304,6 +304,9 @@ The overview places per-subscription report, outcome and billing coverage ahead 
 the ranking rows. Import diagnostics show counts only; source filenames, receipt
 references and credentials stay out of the view.
 
+See [PROVIDER-COVERAGE.md](PROVIDER-COVERAGE.md) for documented API versus
+subscription-report boundaries and current history coverage limits.
+
 Run `bash scripts/check.sh` before release. This covers offline/degraded collection,
 accounting and evidence regressions, shared ordering, native QML runtime and the
 Omarchy manifest. The marketplace registry currently has no listing for `tmos.usage`;
@@ -315,3 +318,5 @@ and provide the exact target commit. For a git-managed local installation, the
 Omarchy update command is `omarchy plugin update tmos.usage`; `omarchy plugin validate
 <plugin-folder>` checks the manifest. The working branch has not been submitted or
 published.
+
+For captured runs, labelled checks, and explicit accept/fail decisions in the native dashboard, see [Task evidence review](TASK-REVIEW.md).
