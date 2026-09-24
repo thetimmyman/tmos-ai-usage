@@ -41,6 +41,18 @@ ShellRoot {
             }
         }
         Timer { interval: 500; running: true; onTriggered: {
+            function expect(actual, expected, label) {
+                if (actual !== expected) console.error('ERROR coverage ' + label + ': ' + actual + ' expected ' + expected);
+            }
+            expect(view.localCoverageText({activity:{observed_turns:12},stats:{available:false}}), 'Observed · 12 turns', 'local observed')
+            expect(view.localCoverageText({activity:{observed_turns:0},stats:{available:false}}), 'Unavailable', 'local unavailable')
+            expect(view.reportCoverageText({report:{source:'provider export',coverage:{contains_truncated_export:true}}}), 'Partial · truncated export', 'truncated report')
+            expect(view.reportCoverageText({report:{source:'history',coverage:{kind:'accumulated_provider_history',stored_records:27,backfill_pending:true,complete:false}}}), '27 records · backfilling', 'history backfill')
+            expect(view.reportCoverageText({report:{source:'snapshot'}}), 'Snapshot · coverage unknown', 'snapshot')
+            expect(view.taskCoverageText({outcomes:{available:true,counts:{validated:3}}}), '3 validated · observed', 'task outcomes')
+            expect(view.taskCoverageText({outcomes:{available:false}}), 'Unavailable', 'task unavailable')
+            expect(view.billingCoverageText({billing:{available:true,complete:false,invoices:[{},{}]}}), 'Partial · 2 receipts', 'partial billing')
+            expect(view.billingCoverageText({billing:{available:false,invoices:[]}}), 'Unavailable', 'billing unavailable')
             window.checkPrice('codex', '200');
             window.checkPrice('opencode-go', '10');
             window.checkPrice('codex', '200');

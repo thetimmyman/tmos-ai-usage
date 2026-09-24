@@ -34,45 +34,49 @@ def command_report(c, key, base, subscription):
                 'Output tokens': 'totalTokensOut', 'Credits consumed': 'totalCredits'}.items()}}
 
 
-def cline_report(c, key, base, max_pages=10):
+def cline_report(c, key, base, max_pages=10, directory=None):
     """Bounded cursor walk; keep partial results when a later page fails."""
     me = unwrap(c.http_json(base + '/api/v1/users/me', key))
     user = me.get('id')
     if not user:
         return {'note': 'Provider did not return an account ID.'}
-    items, seen, cursors = [], set(), set()
-    cursor = None
-    reason = 'Page limit reached; partial history.'
-    pages = 0
-    exhausted = False
-    for _ in range(max_pages):
-        params = {'limit': 100}
-        if cursor: params['cursor'] = cursor
-        try:
-            data = unwrap(c.http_json(base + '/api/v1/users/' + quote(str(user), safe='') + '/usages?' + urlencode(params), key))
-            page = data.get('items')
-            if not isinstance(page, list) or any(not isinstance(i, dict) or not isinstance(i.get('id'), str) for i in page):
-                raise ValueError('invalid page')
-            next_cursor = data.get('nextToken')
-            if next_cursor is not None and not isinstance(next_cursor, str):
-                raise ValueError('invalid cursor')
-        except Exception:
-            reason = 'History page unavailable; collected pages retained.'
-            break
-        pages += 1
-        added = 0
-        for item in page:
-            if item['id'] not in seen:
-                seen.add(item['id']); items.append(item); added += 1
-        if not next_cursor:
-            exhausted = True
-            reason = 'Reached the end of provider history returned by this endpoint.'
-            break
-        if next_cursor in cursors or (page and added == 0):
-            reason = 'Repeated provider page detected; partial history.'
-            break
-        cursors.add(next_cursor)
-        cursor = next_cursor
+    if directory is not None:
+        import cline_history
+        items, pages, exhausted, reason = cline_history.collect(c, key, base, user, max_pages, directory)
+    else:
+        items, seen, cursors = [], set(), set()
+        cursor = None
+        reason = 'Page limit reached; partial history.'
+        pages = 0
+        exhausted = False
+        for _ in range(max_pages):
+            params = {'limit': 100}
+            if cursor: params['cursor'] = cursor
+            try:
+                data = unwrap(c.http_json(base + '/api/v1/users/' + quote(str(user), safe='') + '/usages?' + urlencode(params), key))
+                page = data.get('items')
+                if not isinstance(page, list) or any(not isinstance(i, dict) or not isinstance(i.get('id'), str) for i in page):
+                    raise ValueError('invalid page')
+                next_cursor = data.get('nextToken')
+                if next_cursor is not None and not isinstance(next_cursor, str):
+                    raise ValueError('invalid cursor')
+            except Exception:
+                reason = 'History page unavailable; collected pages retained.'
+                break
+            pages += 1
+            added = 0
+            for item in page:
+                if item['id'] not in seen:
+                    seen.add(item['id']); items.append(item); added += 1
+            if not next_cursor:
+                exhausted = True
+                reason = 'Reached the end of provider history returned by this endpoint.'
+                break
+            if next_cursor in cursors or (page and added == 0):
+                reason = 'Repeated provider page detected; partial history.'
+                break
+            cursors.add(next_cursor)
+            cursor = next_cursor
     metrics = {'Observed billing records': len(items), 'Pages collected': pages}
     for field, label in [('promptTokens', 'Input tokens'), ('completionTokens', 'Output tokens'), ('cachedTokens', 'Cached tokens'), ('costUsd', 'Reported cost (unverified units)')]:
         values = [numeric(i.get(field)) for i in items]
@@ -88,9 +92,11 @@ def cline_report(c, key, base, max_pages=10):
                'output': total(rows, 'completionTokens'), 'cache_read': total(rows, 'cachedTokens')}
               for name, rows in sorted(groups.items())]
     return {'source': 'Cline paginated usage API', 'observed_at': c._iso(c._now()), 'metrics': metrics,
-            'models': models, 'collection': {'pages': pages, 'endpoint_exhausted': exhausted,
+            'models': models, 'coverage': {'kind': 'accumulated_provider_history' if directory is not None else 'provider_snapshot',
+                'complete': False, 'endpoint_exhausted': exhausted, 'stored_records': len(items), 'backfill_pending': not exhausted},
+            'collection': {'pages': pages, 'endpoint_exhausted': exhausted,
                                             'bounded': True, 'max_records': max_pages * 100},
-            'note': reason + ' At most ' + str(max_pages * 100) + ' recent billing records per refresh. Provider cost units are unverified and not subscription spend. Task outcomes unavailable.'}
+            'note': reason + ' At most ' + str(max_pages * 100) + ' records fetched per refresh; previously captured records are retained when persistent history is enabled. Provider cost units are unverified and not subscription spend. Task outcomes unavailable.'}
 
 
 def attach_local(document, directory, refresh_offers=False, refresh_console=False):

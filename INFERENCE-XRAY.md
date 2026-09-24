@@ -29,7 +29,8 @@ subscriptions can have separate rows, while one pool shared across clients must
 not be duplicated. The initial preview uses the five configured provider rows;
 account-level identity still needs collector integration.
 
-The overview shows outcome, billing and report coverage before the ranking table.
+The overview starts with the ranking table, followed by separate local-activity,
+request-report, task-validation, and billing coverage columns.
 Capacity has its own overlay. When both observed turns and invoice cash exist, a
 separate chart uses independent scales and labels their observation windows; it
 does not calculate cost per turn or influence rankings. Missing samples remain
@@ -93,3 +94,18 @@ updates use the [verification/update form](https://github.com/omacom/omarchy-plu
 with an exact target commit. Source implementation, merge, deployment, theme
 verification and marketplace submission are separate completion states; none are
 implied by this design.
+
+## Resumable provider history
+
+Cline request history is captured into private, account-and-endpoint-scoped
+`cline-history-<digest>.json` checkpoints in the state directory. Each refresh
+fetches at most ten pages of 100 records, resumes from the saved cursor, and
+merges records by hashed provider record ID. When a walk reaches the endpoint's
+end, the next refresh starts a new walk to capture updates. This is bounded to
+100,000 records and 32 MiB per account; hitting either bound stays visibly partial.
+Only numeric usage fields and model names are retained, never prompts or raw IDs.
+Network failures retain the previous records and cursor. Coverage remains
+incomplete for period comparisons even after the endpoint is exhausted; provider
+retention and activity arriving during pagination are not independently certified.
+A historical backfill can delay observing the newest request records; live quota
+collection remains separate.

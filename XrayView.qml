@@ -70,6 +70,37 @@ Rectangle {
         if (value.pendingCount !== null && value.pendingCount > 0) parts.push(root.metric(value.pendingCount) + ' waiting')
         return label + ' import: ' + (parts.length ? parts.join(' · ') : 'no files queued')
     }
+    function localCoverageText(p) {
+        var a = p && p.activity ? p.activity : {}
+        if (!(p && p.stats && p.stats.available) && !(typeof a.observed_turns === 'number' && a.observed_turns > 0))
+            return 'Unavailable'
+        var text = 'Observed'
+        if (typeof a.observed_turns === 'number') text += ' · ' + root.metric(a.observed_turns) + ' turns'
+        if (p.stats && p.stats.available && p.stats.coverageDays > 0) text += ' · ' + root.metric(p.stats.coverageDays) + 'd window'
+        return text
+    }
+    function reportCoverageText(p) {
+        var r = p && p.report ? p.report : {}, c = r.coverage
+        if (!r.source) return 'Unavailable'
+        if (c && c.contains_truncated_export === true) return 'Partial · truncated export'
+        if (c && c.kind === 'accumulated_provider_history') {
+            var records = typeof c.stored_records === 'number' ? root.metric(c.stored_records) + ' records' : 'History captured'
+            return records + (c.backfill_pending === true ? ' · backfilling' : ' · partial period')
+        }
+        if (c && c.complete_period === true) return 'Complete export'
+        if (c) return 'Partial report · period not certified'
+        return 'Snapshot · coverage unknown'
+    }
+    function taskCoverageText(p) {
+        if (!(p && p.outcomes && p.outcomes.available)) return 'Unavailable'
+        var n = p.outcomes.counts.validated
+        return (n === null || n === undefined ? 'Observed · count unknown' : root.metric(n) + ' validated · observed')
+    }
+    function billingCoverageText(p) {
+        if (!(p && p.billing && p.billing.available)) return 'Unavailable'
+        var n = p.billing.invoices.length
+        return (p.billing.complete ? 'Complete' : 'Partial') + ' · ' + root.metric(n) + (n === 1 ? ' receipt' : ' receipts')
+    }
     function hasComparableActivityAndCash(rows) {
         var hasTurns = false, hasCash = false
         rows.forEach(function(p) {
@@ -175,9 +206,10 @@ Rectangle {
                 Label { width: parent.width; color: root.secondary; text: "What is available for this comparison. Captured records may cover only part of the period." }
                 Row {
                     width: parent.width
-                    spacing: Style.space(12)
-                    readonly property real cellWidth: (width - 3 * spacing) / 4
-                    Label { width: parent.cellWidth; text: "SUBSCRIPTION"; color: root.secondary; font.pixelSize: Style.font.caption }
+                    spacing: Style.space(8)
+                    readonly property real cellWidth: (width - 4 * spacing) / 5
+                    Label { width: parent.cellWidth; text: "PROVIDER"; color: root.secondary; font.pixelSize: Style.font.caption }
+                    Label { width: parent.cellWidth; text: "LOCAL ACTIVITY"; color: root.secondary; font.pixelSize: Style.font.caption }
                     Label { width: parent.cellWidth; text: "REQUEST REPORT"; color: root.secondary; font.pixelSize: Style.font.caption }
                     Label { width: parent.cellWidth; text: "TASK VALIDATION"; color: root.secondary; font.pixelSize: Style.font.caption }
                     Label { width: parent.cellWidth; text: "BILLING"; color: root.secondary; font.pixelSize: Style.font.caption }
@@ -190,12 +222,13 @@ Rectangle {
                         spacing: Style.space(8)
                         Row {
                             width: parent.width
-                            spacing: Style.space(12)
-                            readonly property real cellWidth: (width - 3 * spacing) / 4
+                            spacing: Style.space(8)
+                            readonly property real cellWidth: (width - 4 * spacing) / 5
                             Label { width: parent.cellWidth; text: modelData.name; font.bold: true }
-                            Label { width: parent.cellWidth; text: !modelData.report.source ? "Missing" : modelData.report.coverage ? "Partial report" : "Snapshot"; color: modelData.report.source ? Color.foreground : root.secondary }
-                            Label { width: parent.cellWidth; text: modelData.outcomes.available ? root.metric(modelData.outcomes.counts.validated) + " validated" : "Not tracked"; color: modelData.outcomes.available ? Color.foreground : root.secondary }
-                            Label { width: parent.cellWidth; text: modelData.billing.available ? modelData.billing.invoices.length + " receipt" + (modelData.billing.invoices.length === 1 ? "" : "s") : "Missing"; color: modelData.billing.available ? Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.localCoverageText(modelData); color: modelData.stats.available ? Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.reportCoverageText(modelData); color: modelData.report.source ? Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.taskCoverageText(modelData); color: modelData.outcomes.available ? Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.billingCoverageText(modelData); color: modelData.billing.available ? Color.foreground : root.secondary }
                         }
                         Rectangle { width: parent.width; height: 1; color: Qt.alpha(Color.muted, 0.25) }
                     }

@@ -2435,7 +2435,7 @@ def collect_clinepass() -> dict:
             try:
                 import inference_reports
                 import sys
-                out['report'] = inference_reports.cline_report(sys.modules[__name__], key, base)
+                out['report'] = inference_reports.cline_report(sys.modules[__name__], key, base, directory=STATE_DIR)
             except Exception:
                 out['report'] = {'note': 'Cline detailed report unavailable; quota reading retained.'}
             return out
