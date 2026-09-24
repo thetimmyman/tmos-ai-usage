@@ -70,14 +70,6 @@ Rectangle {
         if (value.pendingCount !== null && value.pendingCount > 0) parts.push(root.metric(value.pendingCount) + ' waiting')
         return label + ' import: ' + (parts.length ? parts.join(' · ') : 'no files queued')
     }
-    function reportCoverage(p) {
-        if (!p.report || !p.report.source) {
-            if (p.reportImport && p.reportImport.rejectedCount > 0) return 'No report · export rejected'
-            if (p.reportImport && p.reportImport.pendingCount > 0) return 'No report · exports waiting'
-            return 'No request report captured'
-        }
-        return p.report.coverage ? 'Report available · partial import' : 'Report available · provider snapshot'
-    }
     function hasComparableActivityAndCash(rows) {
         var hasTurns = false, hasCash = false
         rows.forEach(function(p) {
@@ -146,24 +138,66 @@ Rectangle {
                 width: parent.width
                 color: root.secondary
                 text: root.activityMode
-                    ? "* Provisional rank: recorded local turns in the last 30 days / monthly subscription fee. This measures observed utilization, not task quality. Missing harness activity can change the order. Published prices are estimates until confirmed."
+                    ? "* Ranked by observed turns over 30 days ÷ monthly fee. This measures utilization; validated task value needs more evidence."
                     : "Validated ranks require outcomes and recognized spend for the same period and workload cohort. Unknown evidence stays unranked; free usage is separate."
             }
+            Rectangle { width: parent.width; height: 1; color: root.secondary; opacity: 0.4 }
+            Row {
+                width: parent.width
+                Label { width: parent.width * 0.35; text: "SUBSCRIPTION"; color: Color.accent }
+                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.activityMode ? "TURNS / $ *" : "TASKS / $"; color: Color.accent }
+                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.activityMode ? "TURNS · 30D" : "VALIDATED"; color: Color.accent }
+                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.21; text: root.activityMode ? "USD / MONTH" : "SPEND (USD)"; color: Color.accent }
+            }
+            Repeater {
+                model: root.selected ? [root.selected] : root.providers
+                Column {
+                    required property var modelData
+                    width: parent.width
+                    spacing: Style.space(8)
+                    Row {
+                        width: parent.width
+                        Label { width: parent.width * 0.35; text: modelData.valueLabel + " · " + modelData.name }
+                        Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.value(modelData) }
+                        Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.metric(root.activityMode ? modelData.activity.observed_turns : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.validated_tasks : null)) }
+                        Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.21; text: root.cashText(root.activityMode ? (modelData.activity.price ? modelData.activity.price.monthly_usd : null) : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.spend_usd : null)) }
+                    }
+                    Label { visible: root.selected !== null; width: parent.width; color: root.secondary; text: root.activityMode ? (modelData.activity.price ? modelData.activity.price.basis + ' · ' + root.metric(modelData.activity.pi_turns) + ' Pi turns included' : modelData.activity.reason || 'No local activity data') : modelData.economicsReason }
+                    Rectangle { width: parent.width; height: 1; color: Qt.alpha(Color.muted, 0.25) }
+                }
+            }
+            Label { visible: !root.selected; width: parent.width; color: root.secondary; text: root.activityMode ? "Fees use saved prices or invoice amounts; annual plans are shown per month. Open a subscription for its source." : "Only comparable tasks and spend receive a validated rank." }
             Column {
                 visible: !root.selected
                 width: parent.width
                 spacing: Style.space(8)
-                Label { text: "OBSERVATION COVERAGE · ALL SUBSCRIPTIONS"; color: Color.accent; font.bold: true }
+                Label { text: "DATA COVERAGE"; color: Color.accent; font.bold: true }
+                Label { width: parent.width; color: root.secondary; text: "What is available for this comparison. Captured records may cover only part of the period." }
+                Row {
+                    width: parent.width
+                    spacing: Style.space(12)
+                    readonly property real cellWidth: (width - 3 * spacing) / 4
+                    Label { width: parent.cellWidth; text: "SUBSCRIPTION"; color: root.secondary; font.pixelSize: Style.font.caption }
+                    Label { width: parent.cellWidth; text: "REQUEST REPORT"; color: root.secondary; font.pixelSize: Style.font.caption }
+                    Label { width: parent.cellWidth; text: "TASK VALIDATION"; color: root.secondary; font.pixelSize: Style.font.caption }
+                    Label { width: parent.cellWidth; text: "BILLING"; color: root.secondary; font.pixelSize: Style.font.caption }
+                }
                 Repeater {
                     model: root.providers
-                    Row {
+                    Column {
                         required property var modelData
                         width: parent.width
                         spacing: Style.space(8)
-                        Label { width: parent.width * 0.24; text: modelData.name; font.bold: true }
-                        Label { width: parent.width * 0.25; text: root.reportCoverage(modelData) }
-                        Label { width: parent.width * 0.25; text: modelData.outcomes.available ? 'Outcome counts observed · incomplete' : 'No outcome summary' }
-                        Label { width: parent.width * 0.26; text: modelData.billing.available ? 'Invoices observed · incomplete' : 'No billing history' }
+                        Row {
+                            width: parent.width
+                            spacing: Style.space(12)
+                            readonly property real cellWidth: (width - 3 * spacing) / 4
+                            Label { width: parent.cellWidth; text: modelData.name; font.bold: true }
+                            Label { width: parent.cellWidth; text: !modelData.report.source ? "Missing" : modelData.report.coverage ? "Partial report" : "Snapshot"; color: modelData.report.source ? Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: modelData.outcomes.available ? root.metric(modelData.outcomes.counts.validated) + " validated" : "Not tracked"; color: modelData.outcomes.available ? Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: modelData.billing.available ? modelData.billing.invoices.length + " receipt" + (modelData.billing.invoices.length === 1 ? "" : "s") : "Missing"; color: modelData.billing.available ? Color.foreground : root.secondary }
+                        }
+                        Rectangle { width: parent.width; height: 1; color: Qt.alpha(Color.muted, 0.25) }
                     }
                 }
                 Row {
@@ -190,30 +224,6 @@ Rectangle {
                     text: "OpenCode JSON/Console CSV exports: copy into ~/.local/state/tmos-ai-usage/imports/ and refresh (with --state-dir, use that directory's imports/). For billing, run collector/billing_ledger.py --invoice <record.json> --evidence <private-receipt>; keep source material local. For outcome capture, use collector/task_runner.py run/verify/accept or put event JSONL in outcome-events/. Rejected and waiting counts above identify import problems without showing filenames or paths."
                 }
             }
-            Rectangle { width: parent.width; height: 1; color: root.secondary; opacity: 0.4 }
-            Row {
-                width: parent.width
-                Label { width: parent.width * 0.35; text: "SUBSCRIPTION"; color: Color.accent }
-                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS / $ *" : "TASKS / $"; color: Color.accent }
-                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS · 30D" : "VALIDATED"; color: Color.accent }
-                Label { width: parent.width * 0.21; text: root.activityMode ? "USD / MONTH" : "SPEND (USD)"; color: Color.accent }
-            }
-            Repeater {
-                model: root.selected ? [root.selected] : root.providers
-                Column {
-                    required property var modelData
-                    width: parent.width
-                    spacing: Style.space(8)
-                    Row {
-                        width: parent.width
-                        Label { width: parent.width * 0.35; text: modelData.valueLabel + " · " + modelData.name }
-                        Label { width: parent.width * 0.22; text: root.value(modelData) }
-                        Label { width: parent.width * 0.22; text: root.metric(root.activityMode ? modelData.activity.observed_turns : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.validated_tasks : null)) }
-                        Label { width: parent.width * 0.21; text: root.metric(root.activityMode ? (modelData.activity.price ? modelData.activity.price.monthly_usd : null) : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.spend_usd : null)) }
-                    }
-                    Label { width: parent.width; color: root.secondary; text: root.activityMode ? (modelData.activity.price ? modelData.activity.price.basis + ' · ' + root.metric(modelData.activity.pi_turns) + ' Pi turns included' : modelData.activity.reason || 'No local activity data') : modelData.economicsReason }
-                }
-            }
             Column {
                 visible: !root.selected
                 width: parent.width
@@ -234,7 +244,7 @@ Rectangle {
                     onWidthChanged: requestPaint()
                     onPaint: {
                         var ctx = getContext('2d'); ctx.reset();
-                        var left = 38, right = width - 20, top = 20, bottom = height - 30;
+                        var left = 38, right = width - 45, top = 20, bottom = height - 30;
                         ctx.font = String(Style.font.caption) + 'px ' + Style.font.family;
                         ctx.strokeStyle = muted; ctx.fillStyle = ink;
                         for (var v = 0; v <= 100; v += 50) {
