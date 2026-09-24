@@ -20,11 +20,28 @@ Rectangle {
     property bool showImportHelp: false
     readonly property bool activityMode: providers.length ? providers[0].rankingMetric === 'activity' : true
     readonly property var selected: providers.filter(p => p.id === selectedId)[0] || null
-    onProvidersChanged: if (selectedId && !selected) selectedId = ""
-    onSelectedIdChanged: {
-        var p = selected ? selected.activity.price : null;
+    property string editorProviderId: ""
+    property bool priceDirty: false
+    function loadPriceEditor() {
+        // Resolve from the source array: selected's binding may still refer to the
+        // previous tab while selectedIdChanged is being delivered.
+        var row = providers.filter(p => p.id === selectedId)[0];
+        var p = row && row.activity ? row.activity.price : null;
+        editorProviderId = row ? row.id : "";
         priceInput.text = p ? String(p.amount_usd) : '';
         cycleInput.currentIndex = p && p.cycle === 'year' ? 1 : 0;
+        priceDirty = false;
+    }
+    onSelectedIdChanged: loadPriceEditor()
+    onProvidersChanged: {
+        if (selectedId && !providers.some(p => p.id === selectedId)) selectedId = "";
+        else if (!priceDirty) loadPriceEditor();
+    }
+    function savePriceEditor() {
+        if (!savingPrice && editorProviderId && editorProviderId === selectedId
+                && providers.some(p => p.id === editorProviderId)) {
+            priceSaved(editorProviderId, priceInput.text, cycleInput.currentIndex ? 'year' : 'month');
+        }
     }
     function metric(v) { return typeof v === "number" && isFinite(v) ? v.toLocaleString(Qt.locale(), 'f', v % 1 ? 2 : 0) : "—" }
     function timestamp(v) {
@@ -313,8 +330,10 @@ Rectangle {
                     spacing: Style.space(8)
                     TextField {
                         id: priceInput
+                        objectName: "subscriptionPriceInput"
                         width: Style.space(140)
                         placeholderText: "USD amount"
+                        onTextEdited: root.priceDirty = true
                         color: Color.foreground
                         placeholderTextColor: root.secondary
                         selectionColor: Color.accent
@@ -324,13 +343,14 @@ Rectangle {
                     }
                     Action {
                         id: cycleInput
+                        objectName: "subscriptionCycleInput"
                         property int currentIndex: 0
                         title: currentIndex ? "Annual ↔" : "Monthly ↔"
-                        onActivated: currentIndex = currentIndex ? 0 : 1
+                        onActivated: { currentIndex = currentIndex ? 0 : 1; root.priceDirty = true }
                     }
                     Action {
                         title: root.savingPrice ? 'Saving…' : 'Save actual fee'
-                        onActivated: if (root.selected && !root.savingPrice) root.priceSaved(root.selected.id, priceInput.text, cycleInput.currentIndex ? 'year' : 'month')
+                        onActivated: root.savePriceEditor()
                     }
                 }
                 Label { width: parent.width; visible: root.priceError !== ''; text: root.priceError; color: Color.urgent }
