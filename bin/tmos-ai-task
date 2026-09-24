@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Capture a native agent run, verify it, and review evidence without changing that agent.
+set -euo pipefail
+plugin_dir=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+state_dir=${TMOS_USAGE_STATE_DIR:-"$HOME/.local/state/tmos-ai-usage"}
+if [[ $# -eq 0 || $1 == --help || $1 == -h ]]; then
+    cat <<'HELP'
+Usage: tmos-ai-task run|verify|accept|fail|abandon [options]
+       tmos-ai-task review
+
+run:    --provider ID --cohort NAME --task-id ID [--label TEXT] [--artifact FILE] -- agent argv...
+verify: --task-id ID --reviewer NAME [--check-label TEXT] -- check argv...
+review: list captured runs and check evidence; accept/fail/abandon are also in Inference X-RAY.
+
+A successful command or check never validates a task automatically.
+TMOS_USAGE_STATE_DIR selects a private state directory (defaults to ~/.local/state/tmos-ai-usage).
+HELP
+    exit 0
+fi
+action=$1
+shift
+if [[ $action == review ]]; then
+    exec python3 "$plugin_dir/collector/task_review.py" list --state-dir "$state_dir" "$@"
+fi
+exec python3 "$plugin_dir/collector/task_runner.py" "$action" --state-dir "$state_dir" "$@"

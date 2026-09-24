@@ -20,6 +20,13 @@ PY=${PYTHON:-python3}
 QMLLINT=${QMLLINT:-$(command -v qmllint || echo /usr/lib/qt6/bin/qmllint)}
 rc=0
 
+echo "== request-log importer: offline accounting and privacy checks"
+"$PY" -m unittest discover -s collector -p 'test_*.py' || rc=1
+echo "== subscription ranking: shared model checks"
+node scripts/test-value.cjs || rc=1
+echo "== Pi observer: private pending activity export"
+node --test integration/pi/observer.test.js || rc=1
+
 echo "== collector: fixture selftest (offline)"
 "$PY" collector/usage_collector.py --selftest
 self_rc=$?
@@ -37,7 +44,7 @@ env TMOS_USAGE_STATE_DIR="$TMPRUN" HOME="$TMPRUN" \
     OPENCODE_GO_BASE="$DEAD" CLINE_API_BASE="$DEAD" COMMAND_CODE_API_BASE="$DEAD" \
     CLAUDE_API_BASE="$DEAD" CODEX_BACKEND_BASE="$DEAD" \
     TMOS_USAGE_PROVIDERS_DIR="$FIXDEFS" \
-    "$PY" collector/usage_collector.py --once >/dev/null 2>&1
+    "$PY" collector/usage_collector.py --once --no-offer-refresh --no-console-report >/dev/null 2>&1
 degraded_rc=$?
 "$PY" - "$TMPRUN/usage.json" <<'PYEOF'
 import json, sys
@@ -76,17 +83,22 @@ absent_rc=$?
 echo "== collector: --list-providers exit=$list_rc, --probe refused exit=$probe_rc, --probe unknown exit=$absent_rc"
 [ $list_rc -eq 0 ] && [ $probe_rc -eq 0 ] && [ $absent_rc -eq 2 ] || rc=1
 
-echo "== qml: entry points parse"
-if command -v "$QMLLINT" >/dev/null 2>&1; then
-    "$QMLLINT" BarWidget.qml Panel.qml Service.qml 2>&1 |
-        grep -viE "Failed to import|Warnings occurred while importing|are your import paths|^---|^$|^\s*\^+\s*$|was not found\. Did you add all imports" |
-        head -20
-    qml_rc=${PIPESTATUS[0]}
+echo "== qml: syntax (runtime imports checked by native smoke test)"
+QMLFORMAT=${QMLFORMAT:-/usr/lib/qt6/bin/qmlformat}
+if command -v "$QMLFORMAT" >/dev/null 2>&1; then
+    for file in *.qml; do
+        "$QMLFORMAT" "$file" >/dev/null || rc=1
+    done
 else
-    echo "SKIP  $QMLLINT not installed (Qt declarative tools)"
-    qml_rc=0
+    echo "SKIP qmlformat not installed"
 fi
-echo "== qml: exit=$qml_rc"
+if command -v quickshell >/dev/null 2>&1 && [ -d /usr/share/omarchy/shell/Commons ]; then
+    bash scripts/test-xray.sh || rc=1
+    bash scripts/test-price-save.sh || rc=1
+    bash scripts/test-task-review.sh || rc=1
+else
+    echo "SKIP native runtime: requires Quickshell and Omarchy"
+fi
 
 echo "== manifest: validate against the shell's own rules"
 if command -v omarchy >/dev/null 2>&1; then

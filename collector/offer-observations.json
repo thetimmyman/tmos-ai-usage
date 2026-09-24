@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-24T18:07:26Z",
+  "fresh_for_seconds": 86400,
+  "offers": [
+    {"provider": "command-code", "model": "deepseek-v4.1-flash", "description": "GOAT model allowance raised from $40 to $60; Pro from $50 to $70. Allowance is not cash spend.", "expires_date": "2026-09-28", "terms": "Provider advertises through September 28; timezone unspecified.", "source": "https://commandcode.ai/docs/resources/pricing-limits"},
+    {"provider": "command-code", "model": "minimax-m3", "description": "Advertised 2× usage per credit.", "terms": "No end date published in this observation.", "source": "https://commandcode.ai/docs/resources/pricing-limits"},
+    {"provider": "command-code", "model": "stealth/space-bunny-alpha", "description": "Advertised zero-credit requests during the preview.", "terms": "Availability depends on the preview continuing; check the route before dispatch.", "source": "https://commandcode.ai/docs/resources/pricing-limits"}
+  ]
+}

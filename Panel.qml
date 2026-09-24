@@ -6,7 +6,7 @@
 // The data stays in BarWidget.qml (one UsageSource, one clock), and this file reads it back through
 // `hostWidget`, so nothing is collected or watched twice.
 //
-// Layout rule this file exists to keep: EVERY subscription is on the first page, in the same order,
+// Layout rule: EVERY subscription is on the first page, in the shared economic ranking order,
 // with no switcher. A row expands underneath itself for depth; opening one never hides another.
 //
 // Every colour, size and font here is a qs.Commons token (gate N3), and tone names come from
@@ -52,6 +52,7 @@ Ui.Panel {
     // Which provider's depth is open, by id ("" = none). One at a time: the point of the panel is
     // the list, and two open rows would push the other subscriptions off the page.
     property string expandedId: ""
+    property bool xray: false
 
     // ---------------------------------------------------------------- companions
     //
@@ -147,8 +148,8 @@ Ui.Panel {
         // Wide enough for three window chips and a chevron on one line; tall enough that all five
         // subscriptions are on screen at once with no scrolling (the cap only bites once a row is
         // expanded, and then the expansion is what scrolls).
-        contentWidth: panel.fittedContentWidth(Style.space(430))
-        contentHeight: panel.fittedContentHeight(body.implicitHeight, Style.space(780))
+        contentWidth: panel.fittedContentWidth(Style.space(root.xray ? 940 : 430))
+        contentHeight: panel.fittedContentHeight(root.xray ? Style.space(720) : body.implicitHeight, Style.space(780))
 
         Ui.PanelKeyCatcher {
             id: catcher
@@ -156,6 +157,7 @@ Ui.Panel {
             onCloseRequested: root.close()
             onTextKey: function(text) {
                 if (text === "r" || text === "R") root.refresh();
+                else if (text === "x" || text === "X") root.xray = !root.xray;
                 else if (text === "j" || text === "J") root.moveExpansion(1);
                 else if (text === "k" || text === "K") root.moveExpansion(-1);
             }
@@ -163,7 +165,30 @@ Ui.Panel {
             onActivateRequested: root.toggleCurrent()
             onTabRequested: function(direction) { root.switchPanel(direction) }
 
+            XrayView {
+                anchors.fill: parent
+                visible: root.xray
+                providers: root.providers
+                onBackRequested: root.xray = false
+                priceStatus: root.hostWidget ? root.hostWidget.usageSource.priceStatus : ""
+                priceError: root.hostWidget ? root.hostWidget.usageSource.priceError : ""
+                savingPrice: root.hostWidget ? root.hostWidget.usageSource.savingPrice : false
+                taskReviews: root.hostWidget ? root.hostWidget.usageSource.taskReviews : []
+                taskReviewTruncated: root.hostWidget ? root.hostWidget.usageSource.taskReviewTruncated : false
+                taskReviewUnavailable: root.hostWidget ? root.hostWidget.usageSource.taskReviewUnavailable : 0
+                taskReviewLoading: root.hostWidget ? root.hostWidget.usageSource.taskReviewLoading : false
+                taskReviewDeciding: root.hostWidget ? root.hostWidget.usageSource.taskReviewDeciding : false
+                taskReviewError: root.hostWidget ? root.hostWidget.usageSource.taskReviewError : ""
+                taskReviewStatus: root.hostWidget ? root.hostWidget.usageSource.taskReviewStatus : ""
+                onModeSelected: function(mode) { if (root.hostWidget) root.hostWidget.usageSource.rankingMode = mode }
+                onPriceSaved: function(provider, amount, cycle) { if (root.hostWidget) root.hostWidget.usageSource.savePrice(provider, amount, cycle) }
+                onTaskReviewsRequested: if (root.hostWidget) root.hostWidget.usageSource.refreshTaskReviews()
+                onTaskDecisionRequested: function(taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted) {
+                    if (root.hostWidget) root.hostWidget.usageSource.decideTask(taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted)
+                }
+            }
             ScrollView {
+                visible: !root.xray
                 id: scroll
                 anchors.fill: parent
                 clip: true
@@ -185,7 +210,7 @@ Ui.Panel {
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
                             textFormat: Text.PlainText
-                            text: "AI budget"
+                            text: root.providers.length && root.providers[0].rankingMetric === "activity" ? "AI budget · turns/$*" : "AI budget"
                             color: root.foreground
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.subtitle
@@ -205,6 +230,20 @@ Ui.Panel {
                         }
                     }
 
+                    Rectangle {
+                        width: parent.width
+                        height: Style.space(32)
+                        color: Qt.alpha(Color.accent, 0.12)
+                        border.color: Color.accent
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Open Inference X-RAY  →"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: root.xray = true; cursorShape: Qt.PointingHandCursor }
+                    }
                     // ---- the whole machine in one line, when any provider has history ------
                     Text {
                         width: parent.width
@@ -290,7 +329,7 @@ Ui.Panel {
                                             anchors.rightMargin: Style.spacing.sm
                                             anchors.verticalCenter: parent.verticalCenter
                                             textFormat: Text.PlainText
-                                            text: providerRow.provider.name + (providerRow.provider.plan ? ("  " + providerRow.provider.plan) : "")
+                                            text: providerRow.provider.valueLabel + " · " + providerRow.provider.name + (providerRow.provider.plan ? ("  " + providerRow.provider.plan) : "")
                                             color: root.foreground
                                             font.family: root.fontFamily
                                             font.pixelSize: Style.font.body
