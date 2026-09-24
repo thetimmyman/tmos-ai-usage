@@ -216,9 +216,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("export", type=Path)
     parser.add_argument("--ledger", required=True, type=Path)
+    parser.add_argument("--summary", type=Path, help="atomically write the private dashboard summary")
     args = parser.parse_args()
     try:
+        if args.summary and args.summary.resolve() in (args.export.resolve(), args.ledger.resolve()):
+            raise ValueError("summary must not overwrite source or ledger")
         result = import_file(args.export, args.ledger)
+        if args.summary:
+            args.summary.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp = tempfile.mkstemp(prefix='.request-summary-', dir=args.summary.parent)
+            try:
+                with os.fdopen(fd, 'w') as stream:
+                    json.dump(result, stream, indent=2, allow_nan=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp, args.summary)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
     except (ValueError, KeyError, TypeError, OSError) as error:
         parser.exit(2, f"Import failed: {error}\n")
     print(json.dumps(result, indent=2, allow_nan=False))

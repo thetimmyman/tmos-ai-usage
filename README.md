@@ -312,3 +312,9 @@ schema. A service-account key is required for that future automatic collector. T
 allowance credential is not assumed to grant report access.
 
 Run importer checks: `python3 -m unittest discover -s collector -p 'test_request_log_import.py'`.
+
+## Inference X-RAY (0.2)
+
+The budget popup opens a native comparison dashboard with shared subscription ranks,
+provider reports and dated offer observations. See [ECONOMICS.md](ECONOMICS.md) for
+imports, evidence requirements, supported reports and current integration limits.

@@ -52,6 +52,7 @@ Ui.Panel {
     // Which provider's depth is open, by id ("" = none). One at a time: the point of the panel is
     // the list, and two open rows would push the other subscriptions off the page.
     property string expandedId: ""
+    property bool xray: false
 
     // ---------------------------------------------------------------- companions
     //
@@ -147,8 +148,8 @@ Ui.Panel {
         // Wide enough for three window chips and a chevron on one line; tall enough that all five
         // subscriptions are on screen at once with no scrolling (the cap only bites once a row is
         // expanded, and then the expansion is what scrolls).
-        contentWidth: panel.fittedContentWidth(Style.space(430))
-        contentHeight: panel.fittedContentHeight(body.implicitHeight, Style.space(780))
+        contentWidth: panel.fittedContentWidth(Style.space(root.xray ? 940 : 430))
+        contentHeight: panel.fittedContentHeight(root.xray ? Style.space(720) : body.implicitHeight, Style.space(780))
 
         Ui.PanelKeyCatcher {
             id: catcher
@@ -156,6 +157,7 @@ Ui.Panel {
             onCloseRequested: root.close()
             onTextKey: function(text) {
                 if (text === "r" || text === "R") root.refresh();
+                else if (text === "x" || text === "X") root.xray = !root.xray;
                 else if (text === "j" || text === "J") root.moveExpansion(1);
                 else if (text === "k" || text === "K") root.moveExpansion(-1);
             }
@@ -163,7 +165,14 @@ Ui.Panel {
             onActivateRequested: root.toggleCurrent()
             onTabRequested: function(direction) { root.switchPanel(direction) }
 
+            XrayView {
+                anchors.fill: parent
+                visible: root.xray
+                providers: root.providers
+                onBackRequested: root.xray = false
+            }
             ScrollView {
+                visible: !root.xray
                 id: scroll
                 anchors.fill: parent
                 clip: true
@@ -205,6 +214,20 @@ Ui.Panel {
                         }
                     }
 
+                    Rectangle {
+                        width: parent.width
+                        height: Style.space(32)
+                        color: Qt.alpha(Color.accent, 0.12)
+                        border.color: Color.accent
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Open Inference X-RAY  →"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: root.xray = true; cursorShape: Qt.PointingHandCursor }
+                    }
                     // ---- the whole machine in one line, when any provider has history ------
                     Text {
                         width: parent.width

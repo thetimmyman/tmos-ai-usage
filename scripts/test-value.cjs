@@ -7,7 +7,7 @@ const value = {};
 vm.runInNewContext(fs.readFileSync(path.join(root, 'Value.js'), 'utf8').replace(/^\.pragma.*$/m, ''), value);
 const context = {period: '2026-09', cohort: 'bounded-fix'};
 const row = (id, tasks, spend, extra = {}) => ({id, name: id, economics: {
-  ...context, coverage_complete: true, spend_basis: 'recognized_subscription_and_metered_usd',
+  ...context, coverage_complete: true, evidence_verified: true, outcomes_sha256: "a".repeat(64), spend_sha256: "b".repeat(64), spend_basis: 'recognized_subscription_and_metered_usd',
   validated_tasks: tasks, spend_usd: spend, ...extra
 }});
 const input = [row('unknown', 99, 1, {coverage_complete: false}), row('low', 5, 10),
@@ -16,7 +16,7 @@ const result = value.rankProviders(input, context);
 assert.deepEqual(Array.from(result, r => r.id), ['best', 'tied', 'low', 'zero', 'free', 'unknown']);
 assert.deepEqual(Array.from(result, r => r.valueLabel), ['#1', '#1', '#3', '#4', 'Free', 'Unranked']);
 assert.equal(input[0].valueRank, undefined);
-for (const extra of [{spend_usd: null}, {spend_usd: -1}, {spend_usd: Infinity},
+for (const extra of [{evidence_verified: false}, {outcomes_sha256: "invalid"}, {spend_usd: null}, {spend_usd: -1}, {spend_usd: Infinity},
   {spend_usd: '10'}, {validated_tasks: 1.5}, {validated_tasks: NaN},
   {period: 'other'}, {cohort: 'other'}, {spend_basis: 'promotional-credit'}]) {
   assert.equal(value.rankProviders([row('bad', 5, 10, extra)], context)[0].valueLabel, 'Unranked');

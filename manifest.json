@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "tmos.usage",
   "name": "TMOS AI Usage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Timothy DeFreest",
   "license": "MIT",
   "homepage": "https://github.com/thetimmyman/tmos-ai-usage",
-  "description": "Every AI subscription and API plan on the machine in one bar panel: rate-limit windows with reset times, prepaid balances, and local token history by day and by model. Reads the CLIs' own credentials and transcripts, read-only.",
+  "description": "AI subscription budgets and native Inference X-RAY: compare capacity, request health, token usage and evidence-backed task value across providers.",
   "kinds": [
     "service",
     "bar-widget"

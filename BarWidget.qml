@@ -64,9 +64,14 @@ BarWidget {
 
     // The provider currently on the bar. Clamped so a shrink in the list between ticks can never
     // point past the end.
-    readonly property var focusedProvider: root.providers.length > 0
-        ? root.providers[Math.min(root.rotateIndex, root.providers.length - 1)]
-        : null
+    readonly property var focusedProvider: {
+        if (root.providers.length === 0) return null;
+        if (root.rotateSecs === 0) {
+            var tight = Model.tightest(root.providers);
+            return tight ? tight.provider : root.providers[0];
+        }
+        return root.providers[Math.min(root.rotateIndex, root.providers.length - 1)];
+    }
 
     onProvidersChanged: rotateIndex = 0
 

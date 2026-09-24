@@ -87,6 +87,8 @@ function normalizeProvider(rawRow, observedAtMs) {
   return {
     id: id,
     economics: row.economics || null,
+    report: row.report || {},
+    offers: Array.isArray(row.offers) ? row.offers : [],
     // A definition-based provider carries its own display name; a built-in never does, so this
     // leaves every built-in row exactly as it was and lets a definition name itself properly.
     name: PROVIDER_LABEL[id] || (row.label ? String(row.label) : id),

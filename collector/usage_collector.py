@@ -2387,6 +2387,12 @@ def collect_clinepass() -> dict:
             )
             if name:
                 out["plan"] = _scrub(name)
+            try:
+                import inference_reports
+                import sys
+                out['report'] = inference_reports.cline_report(sys.modules[__name__], key, base)
+            except Exception:
+                out['report'] = {'note': 'Cline detailed report unavailable; quota reading retained.'}
             return out
     # Meter unreachable or an odd shape -> fall through to the ledger-derived estimate.
 
@@ -2455,7 +2461,14 @@ def collect_command_code() -> dict:
     base = os.environ.get("COMMAND_CODE_API_BASE", "https://api.commandcode.ai")
     credits = http_json(f"{base}/alpha/billing/credits", key)
     subscription = http_json(f"{base}/alpha/billing/subscriptions", key)
-    return parse_command_code(credits, subscription)
+    out = parse_command_code(credits, subscription)
+    try:
+        import inference_reports
+        import sys
+        out['report'] = inference_reports.command_report(sys.modules[__name__], key, base, subscription)
+    except Exception:
+        out['report'] = {'note': 'Command Code detailed report unavailable; quota reading retained.'}
+    return out
 
 
 def _claude_local_entries(now: datetime) -> list:
@@ -2686,9 +2699,18 @@ def collect_all(only: list[str] | None = None, *, local_stats: bool = True) -> d
 def write_cache(document: dict, path: Path = CACHE_PATH) -> Path:
     """Atomic: a reader with a FileView never sees half a document."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(document, indent=2, sort_keys=False) + "\n")
-    os.replace(tmp, path)
+    import tempfile
+    descriptor, temporary = tempfile.mkstemp(prefix='.usage-', suffix='.json', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(document, stream, indent=2)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return path
 
 
@@ -3603,7 +3625,10 @@ def main(argv: list[str] | None = None) -> int:
             "--probe ID, or --selftest"
         )
 
+    configure_paths(args.state_dir)
     document = collect_all(args.only, local_stats=not args.no_stats)
+    import inference_reports
+    inference_reports.attach_local(document, STATE_DIR)
     try:
         write_cache(document, configure_paths(args.state_dir))
     except OSError as exc:

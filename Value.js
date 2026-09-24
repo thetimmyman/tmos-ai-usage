@@ -11,7 +11,8 @@ function rankProviders(providers, context) {
     valid = !!(context && typeof context.period === "string" && context.period &&
       typeof context.cohort === "string" && context.cohort &&
       e && e.period === context.period && e.cohort === context.cohort &&
-      e.coverage_complete === true &&
+      e.coverage_complete === true && e.evidence_verified === true &&
+      /^[0-9a-f]{64}$/.test(e.outcomes_sha256 || "") && /^[0-9a-f]{64}$/.test(e.spend_sha256 || "") &&
       e.spend_basis === "recognized_subscription_and_metered_usd" &&
       typeof e.spend_usd === "number" && isFinite(e.spend_usd) && e.spend_usd >= 0 &&
       typeof e.validated_tasks === "number" && isFinite(e.validated_tasks) &&
