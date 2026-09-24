@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.3.0 source update · 2026-09-24 (not yet published)
+## 0.3.0 · 2026-09-24
+
+Source released; marketplace listing submitted for maintainer review.
 
 - Add native task review with explicit reviewer acceptance, retained check receipts, stale-run guards, and a `tmos-ai-task` capture command.
 - Document provider report capabilities and distinguish consumer subscriptions from organization API billing.

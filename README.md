@@ -309,14 +309,13 @@ subscription-report boundaries and current history coverage limits.
 
 Run `bash scripts/check.sh` before release. This covers offline/degraded collection,
 accounting and evidence regressions, shared ordering, native QML runtime and the
-Omarchy manifest. The marketplace registry currently has no listing for `tmos.usage`;
-after the change is merged to the public repository, submit its initial listing with
-the [Omarchy plugin submission form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml)
-following the [publishing guide](https://plugins.omarchy.org/publish.html). For
-later listing updates, use the [plugin verification/update form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
-and provide the exact target commit. For a git-managed local installation, the
-Omarchy update command is `omarchy plugin update tmos.usage`; `omarchy plugin validate
-<plugin-folder>` checks the manifest. The working branch has not been submitted or
-published.
+Omarchy manifest. Version 0.3.0 is merged and the initial marketplace listing is
+[submitted for review](https://github.com/omacom/omarchy-plugin-marketplace/issues/8574).
+Marketplace approval is separate from the tested source release. For later listing
+updates, use the [plugin verification/update form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
+and provide the exact target commit. For a git-managed local installation, use
+`omarchy plugin update tmos.usage`; `omarchy plugin validate <plugin-folder>` checks
+the manifest. See the [publishing guide](https://plugins.omarchy.org/publish.html)
+for the marketplace review process.
 
 For captured runs, labelled checks, and explicit accept/fail decisions in the native dashboard, see [Task evidence review](TASK-REVIEW.md).
