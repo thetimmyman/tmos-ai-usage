@@ -1,3 +1,40 @@
+# Working comparisons before validated task evidence exists
+
+The dashboard now defaults to **Observed turns / $ · provisional** while complete
+validated-task receipts are unavailable. Overview, provider tabs and the quick
+budget dropdown share this ordering. `#1*` means the highest **observed local turns
+in the collector's 30-day window / monthly subscription fee**. It does not mean
+best task quality or lowest cost per accepted task. Sparse logs and activity in
+other harnesses can materially change this order; this is not a buying recommendation.
+
+Native CLI transcripts and `~/.pi/agent/sessions` contribute turns. Pi turns are
+attributed to the first assistant provider following a user message, deduplicated
+by session/entry identity; generic API providers are not assigned to subscriptions.
+Ephemeral `--no-session` workers and other machines are not covered.
+CLI and Pi logs have no shared request identity: imported/mirrored work across
+those two stores can count twice, so keep each store as its native log source. Provider
+request counts remain separate and are never treated as user turns or validated
+tasks. Codex token reporting deduplicates per-response usage records, with a
+snapshot-deduplicating fallback for older logs.
+
+Each provider tab has **Subscription price**: enter a USD amount, choose Monthly
+or Annual, and save. Annual fees normalize to monthly by dividing by twelve.
+These user-entered prices are stored privately in `subscriptions.json`; they do
+not manufacture recognized-spend receipts for the validated-task comparison.
+
+Without a user-entered fee, dated published price estimates are available for
+exactly detected Command Code GOAT, OpenCode Go and Claude Max tiers. Claude's
+local tier distinguishes 5x from 20x; a generic Max label cannot choose a price.
+Cline's plan API supplies its per-seat annual/monthly quote. Quotes are explicitly
+estimated fees, not invoices, taxes, top-ups or proof of actual spend. Generic
+Codex Pro metadata does not establish a fee; the UI says **Set price**.
+
+The **Validated tasks / $** toggle retains the strict comparison below. Switching
+metrics changes the overview, provider tabs and quick dropdown together. Every
+missing evidence row explains what is absent. The default moves to validated
+only once all displayed providers have matching projected evidence; selecting a
+mode manually holds it for that widget's lifetime.
+
 # Inference X-RAY
 
 Open the AI budget popup, then **Open Inference X-RAY**. Overview compares every

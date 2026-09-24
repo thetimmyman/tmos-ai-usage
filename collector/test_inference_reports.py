@@ -2,6 +2,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timezone
@@ -30,7 +31,8 @@ class ReportsTest(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(r))
     def test_unknown_numeric(self):
         for n in [True, -1, float('nan'), '3', None]: self.assertIsNone(reports.numeric(n))
-    def test_missing_local_data(self):
+    @patch("pi_activity.scan", return_value={})
+    def test_missing_local_data(self, _scan):
         with tempfile.TemporaryDirectory() as d:
             doc = {'providers':[{'provider':'opencode-go'}]}
             reports.attach_local(doc, d)
@@ -40,7 +42,8 @@ class ReportsTest(unittest.TestCase):
             self.assertNotIn('economics_context', doc)
 
 class EvidenceTest(unittest.TestCase):
-    def test_receipts_projection_and_tamper(self):
+    @patch("pi_activity.scan", return_value={})
+    def test_receipts_projection_and_tamper(self, _scan):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             (directory / 'evidence').mkdir()

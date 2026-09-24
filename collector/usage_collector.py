@@ -714,7 +714,7 @@ def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
 # borrows another provider's history, and a scan that finds nothing reports nothing, not zero.
 
 STATS_DAYS = 30
-STATS_CACHE_VERSION = 2
+STATS_CACHE_VERSION = 3
 STATS_MAX_FILES = 600
 
 
@@ -1065,14 +1065,42 @@ def _claude_contribution(path: Path, now: datetime) -> dict:
 def _codex_contribution(path: Path, now: datetime) -> dict:
     """One Codex rollout's day/model contribution.
 
-    A rollout carries two token objects: `total_token_usage` is the session running total and
-    `last_token_usage` the turn's own delta. Only the delta is summed — summing the running total
-    would multiply every turn by all the turns before it.
+    Prefer `token_usage_record.payload.usage`, one response delta keyed by response_id. The
+    adjacent token_count event is a snapshot and may be repeated; its `total_token_usage` is a
+    cumulative running total. Older rollouts without usage records fall back to token_count while
+    ignoring repeated cumulative snapshots. `turn_token_usage` and `thread_token_usage` are also
+    cumulative and are never summed.
     """
     stats = _Stats("")
     session = path.stem
     model: object = None
-    for row in _jsonl_rows(path):
+    rows = _jsonl_rows(path)
+    has_usage_records = any(
+        row.get("type") == "token_usage_record"
+        and isinstance(row.get("payload"), dict)
+        and isinstance(row["payload"].get("usage"), dict)
+        for row in rows
+    )
+    seen_responses: set[str] = set()
+    previous_cumulative: int | None = None
+    previous_legacy_usage: tuple | None = None
+
+    def add_usage(when: datetime, usage: dict) -> None:
+        bucket = {
+            "input_tokens": _num(usage.get("input_tokens")) or 0,
+            "output_tokens": _num(usage.get("output_tokens")) or 0,
+            "cache_read_tokens": _num(usage.get("cached_input_tokens")) or 0,
+            "cache_write_tokens": _num(usage.get("cache_write_input_tokens")) or 0,
+        }
+        # Cached input is a subset of input_tokens. Keep its diagnostic bucket, but do not add
+        # it twice to the total.
+        total = _int(usage.get("total_tokens")) or _int(
+            bucket["input_tokens"] + bucket["output_tokens"]
+        )
+        bucket["total_tokens"] = total
+        stats.add_tokens(when, session, model, bucket, total)
+
+    for row in rows:
         when = _parse_iso(row.get("timestamp"))
         if when is None:
             continue
@@ -1084,6 +1112,18 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
             if isinstance(payload_model, str):
                 model = payload_model
             continue
+        if kind == "token_usage_record":
+            if not has_usage_records:
+                continue
+            response_id = payload.get("response_id")
+            raw_usage = payload.get("usage")
+            if isinstance(response_id, str) and response_id:
+                if response_id in seen_responses:
+                    continue
+                seen_responses.add(response_id)
+            if isinstance(raw_usage, dict):
+                add_usage(when, raw_usage)
+            continue
         if kind != "event_msg":
             continue
         event = str(payload.get("type"))
@@ -1092,23 +1132,24 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
         if event == "task_started":
             stats.add_prompt(when, session)
             continue
+        if has_usage_records:
+            # token_count is a repeatable UI snapshot when canonical response records exist.
+            continue
         raw_info = payload.get("info")
         info = raw_info if isinstance(raw_info, dict) else {}
         raw_last = info.get("last_token_usage")
         last = raw_last if isinstance(raw_last, dict) else {}
-        bucket = {
-            "input_tokens": _num(last.get("input_tokens")) or 0,
-            "output_tokens": _num(last.get("output_tokens")) or 0,
-            "cache_read_tokens": _num(last.get("cached_input_tokens")) or 0,
-            "cache_write_tokens": _num(last.get("cache_write_input_tokens")) or 0,
-        }
-        # Codex counts cached input inside input_tokens, so the reply total is input+output and
-        # cache_read is reported beside it, never added again; the rollout's own total wins.
-        total = _int(last.get("total_tokens")) or _int(
-            bucket["input_tokens"] + bucket["output_tokens"]
-        )
-        bucket["total_tokens"] = total
-        stats.add_tokens(when, session, model, bucket, total)
+        cumulative = info.get("total_token_usage")
+        cumulative_total = _int(cumulative.get("total_tokens")) if isinstance(cumulative, dict) else None
+        signature = tuple(sorted((key, value) for key, value in last.items()))
+        if cumulative_total is not None:
+            if cumulative_total == previous_cumulative:
+                continue
+            previous_cumulative = cumulative_total
+        elif signature == previous_legacy_usage:
+            continue
+        previous_legacy_usage = signature
+        add_usage(when, last)
     return {"days": stats.days, "models": stats.models}
 
 
@@ -2387,6 +2428,9 @@ def collect_clinepass() -> dict:
             )
             if name:
                 out["plan"] = _scrub(name)
+            if isinstance(p, dict) and type(p.get('pricePerSeatCents')) in (int, float) and p.get('interval') in ('Annual', 'Monthly'):
+                out['subscription_quote'] = {'amount_usd': p['pricePerSeatCents'] / 100,
+                    'cycle': 'year' if p['interval'] == 'Annual' else 'month'}
             try:
                 import inference_reports
                 import sys
@@ -2536,9 +2580,12 @@ def collect_claude_code() -> dict:
         now = _now()
         out = parse_claude_local(_claude_local_entries(now), now)
         out["plan"] = plan
+        out['plan_tier'] = oauth.get('rateLimitTier') if oauth.get('rateLimitTier') in ('default_claude_max_20x', 'default_claude_max_5x') else None
         out["note"] = _scrub(f"{type(exc).__name__}: {out['note']}")
         return out
-    return parse_claude_code(payload, plan=plan)
+    out = parse_claude_code(payload, plan=plan)
+    out['plan_tier'] = oauth.get('rateLimitTier') if oauth.get('rateLimitTier') in ('default_claude_max_20x', 'default_claude_max_5x') else None
+    return out
 
 
 def collect_codex() -> dict:

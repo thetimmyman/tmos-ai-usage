@@ -37,6 +37,11 @@ Item {
         return Qt.resolvedUrl("collector/usage_collector.py").toString().replace(/^file:\/\//, "");
     }
 
+    property string rankingMode: ""
+    property string cachedText: ""
+    property bool savingPrice: priceWriter.running
+    property string priceError: ""
+    onRankingModeChanged: if (cachedText) apply(cachedText)
     property var providers: []
     // Document-level rollup (today's tokens across every subscription, how many reported).
     // Parsed here so the view still derives nothing of its own; the initial value is the module's
@@ -50,7 +55,8 @@ Item {
     signal reloaded()
 
     function apply(text) {
-        var parsed = Model.parseDocument(text);
+        root.cachedText = text;
+        var parsed = Model.parseDocument(text, root.rankingMode);
         root.providers = parsed.providers;
         root.totals = parsed.totals;
         root.observedAt = parsed.observedAt;
@@ -66,6 +72,25 @@ Item {
         root.refreshError = "";
         collector.command = ["python3", root.collectorPath, "--once", "--state-dir", root.stateDir];
         collector.running = true;
+    }
+
+    function savePrice(provider, amount, cycle) {
+        var n = Number(amount);
+        if (priceWriter.running) return;
+        if (!String(amount).trim() || !isFinite(n) || n < 0) {
+            root.priceError = "Enter a nonnegative USD subscription amount."; return;
+        }
+        root.priceError = "";
+        priceWriter.command = ["python3", Qt.resolvedUrl("collector/subscription_value.py").toString().replace(/^file:\/\//, ""),
+            "--state-dir", root.stateDir, "--provider", provider, "--amount", String(n), "--cycle", cycle];
+        priceWriter.running = true;
+    }
+    QSIo.Process {
+        id: priceWriter
+        onExited: function(code) {
+            if (code !== 0) root.priceError = "Could not save subscription price.";
+            else root.refresh();
+        }
     }
 
     QSIo.FileView {

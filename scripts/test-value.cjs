@@ -33,3 +33,13 @@ const legacy = model.parseDocument(JSON.stringify({providers: [{provider: 'z'}, 
 assert.deepEqual(Array.from(legacy.providers, r => r.id), ['a', 'z']);
 assert.equal(legacy.providers[0].valueLabel, 'Unranked');
 console.log('PASS shared ranking: ordering, ties, free/unknown, coverage, period/cohort, legacy cache, Model integration');
+const activity = (id,n,price) => ({id,name:id,activity:{observed_turns:n,window_days:30,price:{monthly_usd:price}}});
+const ar = value.rankActivity([activity('slow',5,10),activity('fast',30,10),activity('free',2,0),activity('missing',3,undefined)]);
+assert.deepEqual(Array.from(ar,r=>r.valueLabel),['#1*','#2*','Free*','Set price']);
+assert.equal(ar[0].tasksPerDollar,null);
+assert.equal(ar[0].valueScore,3);
+assert.equal(ar[0].rankingMetric,'activity');
+const activityDoc = model.parseDocument(JSON.stringify({comparison_mode:'activity', providers:[{provider:'one',activity:{observed_turns:20,window_days:30,price:{monthly_usd:10}}}]}));
+assert.equal(activityDoc.providers[0].valueLabel,'#1*');
+assert.equal(model.parseDocument(JSON.stringify({comparison_mode:'activity',providers:[{provider:'one'}]}),'validated').providers[0].valueLabel,'Unranked');
+console.log('PASS provisional activity rankings remain distinct from validated task ranks');

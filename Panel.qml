@@ -170,6 +170,10 @@ Ui.Panel {
                 visible: root.xray
                 providers: root.providers
                 onBackRequested: root.xray = false
+                priceError: root.hostWidget ? root.hostWidget.usageSource.priceError : ""
+                savingPrice: root.hostWidget ? root.hostWidget.usageSource.savingPrice : false
+                onModeSelected: function(mode) { if (root.hostWidget) root.hostWidget.usageSource.rankingMode = mode }
+                onPriceSaved: function(provider, amount, cycle) { if (root.hostWidget) root.hostWidget.usageSource.savePrice(provider, amount, cycle) }
             }
             ScrollView {
                 visible: !root.xray
@@ -194,7 +198,7 @@ Ui.Panel {
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
                             textFormat: Text.PlainText
-                            text: "AI budget"
+                            text: root.providers.length && root.providers[0].rankingMetric === "activity" ? "AI budget · turns/$*" : "AI budget"
                             color: root.foreground
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.subtitle

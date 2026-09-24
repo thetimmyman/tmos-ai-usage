@@ -49,7 +49,7 @@ function emptyDocument(error) {
   return { ok: false, error: error, providers: [], observedAt: 0, totals: normalizeTotals(null) }
 }
 
-function parseDocument(text) {
+function parseDocument(text, mode) {
   var doc, observedAt, rows, i
   if (!text || !String(text).trim()) return emptyDocument("no usage cache yet")
   try {
@@ -62,7 +62,7 @@ function parseDocument(text) {
   observedAt = Date.parse(doc.observed_at || "") || 0
   rows = []
   for (i = 0; i < doc.providers.length; i++) rows.push(normalizeProvider(doc.providers[i], observedAt))
-  rows = Value.rankProviders(rows, doc.economics_context)
+  rows = (mode || doc.comparison_mode) === "activity" ? Value.rankActivity(rows) : Value.rankProviders(rows, doc.economics_context)
   return { ok: true, error: "", providers: rows, observedAt: observedAt, totals: normalizeTotals(doc.totals) }
 }
 
@@ -87,6 +87,8 @@ function normalizeProvider(rawRow, observedAtMs) {
   return {
     id: id,
     economics: row.economics || null,
+    economicsReason: String(row.economics_reason || "Validated task and spend evidence unavailable."),
+    activity: row.activity || {},
     report: row.report || {},
     offers: Array.isArray(row.offers) ? row.offers : [],
     // A definition-based provider carries its own display name; a built-in never does, so this

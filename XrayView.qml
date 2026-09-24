@@ -13,8 +13,18 @@ Rectangle {
     property double nowMs: Date.now()
     Timer { interval: 30000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
     signal backRequested()
+    signal modeSelected(string mode)
+    signal priceSaved(string provider, string amount, string cycle)
+    property string priceError: ""
+    property bool savingPrice: false
+    readonly property bool activityMode: providers.length ? providers[0].rankingMetric === 'activity' : true
     readonly property var selected: providers.filter(p => p.id === selectedId)[0] || null
     onProvidersChanged: if (selectedId && !selected) selectedId = ""
+    onSelectedIdChanged: {
+        var p = selected ? selected.activity.price : null;
+        priceInput.text = p ? String(p.amount_usd) : '';
+        cycleInput.currentIndex = p && p.cycle === 'year' ? 1 : 0;
+    }
     function metric(v) { return typeof v === "number" && isFinite(v) ? v.toLocaleString(Qt.locale(), 'f', v % 1 ? 2 : 0) : "—" }
     function timestamp(v) {
         if (typeof v !== 'number' || !isFinite(v)) return 'No timestamp';
@@ -29,7 +39,7 @@ Rectangle {
             return 'EXPIRY DATE REACHED — recheck timezone and terms';
         return 'Observed ' + o.observed_at;
     }
-    function value(p) { return p.tasksPerDollar === null ? "—" : metric(p.tasksPerDollar) }
+    function value(p) { return p.valueScore === null || p.valueScore === undefined ? "—" : metric(p.valueScore) }
     function series(p) { return ['5h', 'week', 'month'].map(k => p.windows[k] ? p.windows[k].remainingPct : -1) }
 
     component Label: Text {
@@ -77,15 +87,22 @@ Rectangle {
                     }
                 }
             }
+            Row {
+                spacing: Style.space(8)
+                Action { title: "Observed turns / $ · provisional"; chosen: root.activityMode; onActivated: root.modeSelected('activity') }
+                Action { title: "Validated tasks / $"; chosen: !root.activityMode; onActivated: root.modeSelected('validated') }
+            }
             Label {
                 width: parent.width
-                text: root.selected ? root.selected.name + "  /  " + root.selected.plan : "All subscriptions · validated task value comparison"
+                text: root.selected ? root.selected.name + "  /  " + root.selected.plan : "All subscriptions · value comparison"
                 font.pixelSize: Style.font.subtitle
             }
             Label {
                 width: parent.width
                 color: root.secondary
-                text: "Ranks require validated outcomes and recognized spend for the same period and workload cohort. Unknown evidence stays unranked; free usage is listed separately."
+                text: root.activityMode
+                    ? "* Provisional rank: recorded local turns in the last 30 days / monthly subscription fee. This measures observed utilization, not task quality. Missing harness activity can change the order. Published prices are estimates until confirmed."
+                    : "Validated ranks require outcomes and recognized spend for the same period and workload cohort. Unknown evidence stays unranked; free usage is separate."
             }
             Column {
                 visible: !root.selected
@@ -150,9 +167,9 @@ Rectangle {
             Row {
                 width: parent.width
                 Label { width: parent.width * 0.35; text: "SUBSCRIPTION"; color: Color.accent }
-                Label { width: parent.width * 0.22; text: "TASKS / $"; color: Color.accent }
-                Label { width: parent.width * 0.22; text: "VALIDATED"; color: Color.accent }
-                Label { width: parent.width * 0.21; text: "SPEND (USD)"; color: Color.accent }
+                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS / $ *" : "TASKS / $"; color: Color.accent }
+                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS · 30D" : "VALIDATED"; color: Color.accent }
+                Label { width: parent.width * 0.21; text: root.activityMode ? "USD / MONTH" : "SPEND (USD)"; color: Color.accent }
             }
             Repeater {
                 model: root.selected ? [root.selected] : root.providers
@@ -164,16 +181,54 @@ Rectangle {
                         width: parent.width
                         Label { width: parent.width * 0.35; text: modelData.valueLabel + " · " + modelData.name }
                         Label { width: parent.width * 0.22; text: root.value(modelData) }
-                        Label { width: parent.width * 0.22; text: root.metric(modelData.valueStatus !== "unranked" ? modelData.economics.validated_tasks : null) }
-                        Label { width: parent.width * 0.21; text: root.metric(modelData.valueStatus !== "unranked" ? modelData.economics.spend_usd : null) }
+                        Label { width: parent.width * 0.22; text: root.metric(root.activityMode ? modelData.activity.observed_turns : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.validated_tasks : null)) }
+                        Label { width: parent.width * 0.21; text: root.metric(root.activityMode ? (modelData.activity.price ? modelData.activity.price.monthly_usd : null) : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.spend_usd : null)) }
                     }
-                    Label { width: parent.width; color: root.secondary; text: modelData.stats.todayText + (modelData.stats.todayText ? ' · ' : '') + (modelData.note || modelData.statusLabel || 'Provider quota available') }
+                    Label { width: parent.width; color: root.secondary; text: root.activityMode ? (modelData.activity.price ? modelData.activity.price.basis + ' · ' + root.metric(modelData.activity.pi_turns) + ' Pi turns included' : modelData.activity.reason || 'No local activity data') : modelData.economicsReason }
                 }
             }
             Column {
                 visible: root.selected !== null
                 width: parent.width
                 spacing: Style.space(12)
+                Label { text: "SUBSCRIPTION PRICE"; color: Color.accent; font.bold: true }
+                Label {
+                    width: parent.width
+                    color: root.secondary
+                    text: root.selected && root.selected.activity.price ? root.selected.activity.price.basis + ' · ' + root.selected.activity.price.source : 'Enter your actual subscription fee to include this provider in the provisional comparison.'
+                }
+                Row {
+                    spacing: Style.space(8)
+                    TextField {
+                        id: priceInput
+                        width: Style.space(140)
+                        placeholderText: "USD amount"
+                        color: Color.foreground
+                        placeholderTextColor: root.secondary
+                        selectionColor: Color.accent
+                        selectedTextColor: Color.background
+                        font.family: Style.font.family
+                        background: Rectangle { color: Color.background; border.color: Color.muted }
+                    }
+                    Action {
+                        id: cycleInput
+                        property int currentIndex: 0
+                        title: currentIndex ? "Annual ↔" : "Monthly ↔"
+                        onActivated: currentIndex = currentIndex ? 0 : 1
+                    }
+                    Action {
+                        title: root.savingPrice ? 'Saving…' : 'Save actual fee'
+                        onActivated: if (root.selected && !root.savingPrice) root.priceSaved(root.selected.id, priceInput.text, cycleInput.currentIndex ? 'year' : 'month')
+                    }
+                }
+                Label { width: parent.width; visible: root.priceError !== ''; text: root.priceError; color: Color.urgent }
+                Label {
+                    width: parent.width
+                    color: root.secondary
+                    text: root.selected ? (root.selected.activity.source || 'No local transcript source')
+                        + ' · observed range ' + (root.selected.activity.first_date || 'unknown') + ' to ' + (root.selected.activity.last_date || 'unknown')
+                        + ' · ' + root.metric(root.selected.activity.observed_sessions) + ' local sessions · Pi turns: ' + root.metric(root.selected.activity.pi_turns) + '. Other harnesses may be missing.' : ''
+                }
                 Label { text: "REQUEST HEALTH & COVERAGE"; color: Color.accent; font.bold: true }
                 Label { width: parent.width; text: root.selected ? (root.selected.report.source || "No detailed provider report") + (root.selected.report.observed_at ? ' · '+root.selected.report.observed_at : '') : '' }
                 Label { width: parent.width; color: root.secondary; text: root.selected ? (root.selected.report.note || "Detailed request health is unavailable for this source.") : '' }

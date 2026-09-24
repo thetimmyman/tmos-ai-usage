@@ -96,6 +96,9 @@ def attach_local(document, directory):
         except (OSError, ValueError, KeyError, TypeError):
             pass
 
+    import subscription_value
+    subscription_value.attach(document, directory)
+
 
 def economics_projection(directory, refs, context, provider):
     """Derive scores from content-addressed receipts, never editable aggregate counters.

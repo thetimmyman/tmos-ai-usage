@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tmos.usage",
   "name": "TMOS AI Usage",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "Timothy DeFreest",
   "license": "MIT",
   "homepage": "https://github.com/thetimmyman/tmos-ai-usage",
