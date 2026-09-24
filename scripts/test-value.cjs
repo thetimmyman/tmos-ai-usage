@@ -43,3 +43,35 @@ const activityDoc = model.parseDocument(JSON.stringify({comparison_mode:'activit
 assert.equal(activityDoc.providers[0].valueLabel,'#1*');
 assert.equal(model.parseDocument(JSON.stringify({comparison_mode:'activity',providers:[{provider:'one'}]}),'validated').providers[0].valueLabel,'Unranked');
 console.log('PASS provisional activity rankings remain distinct from validated task ranks');
+const billingDoc={providers:[{provider:'codex',billing:{cash_paid_usd:95,allocated_known_usd:null,coverage_complete:false,invoices:[{paid_at:'2026-09-01',base_usd:100,discount_usd:10,tax_usd:5,fees_usd:0,paid_usd:95,source_ref:'private-url'}]},outcomes:{available:false,counts:{tasks:0}},console_report:{note:'workspace only'}}]};
+const billed=model.parseDocument(JSON.stringify(billingDoc)).providers[0];
+assert.equal(billed.billing.allocatedKnownUsd,null);
+assert.equal(billed.outcomes.available,false);
+assert(!JSON.stringify(billed.billing).includes('private-url'));
+assert.equal(billed.consoleReport.note,'workspace only');
+console.log('PASS invoice privacy, unknown amounts and unavailable outcomes');
+const importDoc=model.parseDocument(JSON.stringify({
+  report_import:{imported:1,unchanged:2,rejected:3,deferred:4,note:'secret /tmp/private.json token=private'},
+  outcome_import:{applied:5,duplicates:6,rejected_files:7,pending_files:8,filename:'private.json'},
+  providers:[{provider:'opencode-go', billing:{invoices:[],cash_paid_usd:null,allocated_known_usd:null},outcomes:{available:false,counts:{tasks:0}}}]
+})).providers[0];
+assert.deepEqual([importDoc.reportImport.newCount,importDoc.reportImport.unchangedCount,importDoc.reportImport.rejectedCount,importDoc.reportImport.pendingCount],[1,2,3,4]);
+assert.deepEqual([importDoc.outcomeImport.newCount,importDoc.outcomeImport.unchangedCount,importDoc.outcomeImport.rejectedCount,importDoc.outcomeImport.pendingCount],[5,6,7,8]);
+assert.equal(importDoc.billing.available,false);
+assert.equal(importDoc.billing.cashPaidUsd,null);
+assert.equal(importDoc.outcomes.available,false);
+assert(!JSON.stringify(importDoc).includes('private.json'));
+assert(!JSON.stringify(importDoc).includes('/tmp/'));
+assert(!JSON.stringify(importDoc).includes('secret'));
+const failedImport=model.parseDocument(JSON.stringify({report_import:{note:'private path'},outcome_import:{rejected_files:2},providers:[{provider:'codex'}]})).providers[0];
+assert.equal(failedImport.reportImport.available,false);
+assert.equal(failedImport.reportImport.failed,true);
+assert.equal(failedImport.reportImport.rejectedCount,null);
+assert.equal(failedImport.outcomeImport.rejectedCount,2);
+console.log('PASS sanitized report/outcome import states and missing amounts stay unknown');
+const cohortDoc=model.parseDocument(JSON.stringify({providers:[{provider:'codex',outcomes:{available:true,coverage:{kind:'observed ledger events',complete:false},counts:{tasks:2,validated:1,pending:1,failed:0,abandoned:0,reworked:0,turns:3,errors:0},by_cohort:{'small-fixes':{tasks:2,validated:1,turns:3}}}}]})).providers[0];
+assert.equal(cohortDoc.outcomes.available,true);
+assert.equal(cohortDoc.outcomes.cohorts[0].name,'small-fixes');
+assert.equal(cohortDoc.outcomes.cohorts[0].counts.validated,1);
+assert.equal(cohortDoc.outcomes.coverageText,'observed ledger events · incomplete; observed counts only');
+console.log('PASS outcome cohort summaries normalize to observed-only counts');

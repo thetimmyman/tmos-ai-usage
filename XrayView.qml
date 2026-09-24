@@ -17,6 +17,7 @@ Rectangle {
     signal priceSaved(string provider, string amount, string cycle)
     property string priceError: ""
     property bool savingPrice: false
+    property bool showImportHelp: false
     readonly property bool activityMode: providers.length ? providers[0].rankingMetric === 'activity' : true
     readonly property var selected: providers.filter(p => p.id === selectedId)[0] || null
     onProvidersChanged: if (selectedId && !selected) selectedId = ""
@@ -41,6 +42,32 @@ Rectangle {
     }
     function value(p) { return p.valueScore === null || p.valueScore === undefined ? "—" : metric(p.valueScore) }
     function series(p) { return ['5h', 'week', 'month'].map(k => p.windows[k] ? p.windows[k].remainingPct : -1) }
+    function cashText(n) { return n === null || n === undefined ? 'unknown' : '$' + Number(n).toFixed(2) }
+    function importStatus(value, label) {
+        var parts = []
+        if (!value || !value.available) return label + ' import status unavailable' + (value && value.failed ? ' · refresh issue' : '')
+        if (value.newCount !== null) parts.push(root.metric(value.newCount) + ' new')
+        if (value.unchangedCount !== null && value.unchangedCount > 0) parts.push(root.metric(value.unchangedCount) + ' unchanged')
+        if (value.rejectedCount !== null && value.rejectedCount > 0) parts.push(root.metric(value.rejectedCount) + ' rejected')
+        if (value.pendingCount !== null && value.pendingCount > 0) parts.push(root.metric(value.pendingCount) + ' waiting')
+        return label + ' import: ' + (parts.length ? parts.join(' · ') : 'no files queued')
+    }
+    function reportCoverage(p) {
+        if (!p.report || !p.report.source) {
+            if (p.reportImport && p.reportImport.rejectedCount > 0) return 'No report · export rejected'
+            if (p.reportImport && p.reportImport.pendingCount > 0) return 'No report · exports waiting'
+            return 'No request report captured'
+        }
+        return p.report.coverage ? 'Report available · partial import' : 'Report available · provider snapshot'
+    }
+    function hasComparableActivityAndCash(rows) {
+        var hasTurns = false, hasCash = false
+        rows.forEach(function(p) {
+            if (p.activity && typeof p.activity.observed_turns === 'number' && p.activity.observed_turns > 0) hasTurns = true
+            if (p.billing && typeof p.billing.cashPaidUsd === 'number' && p.billing.cashPaidUsd > 0) hasCash = true
+        })
+        return hasTurns && hasCash
+    }
 
     component Label: Text {
         textFormat: Text.PlainText
@@ -108,6 +135,71 @@ Rectangle {
                 visible: !root.selected
                 width: parent.width
                 spacing: Style.space(8)
+                Label { text: "OBSERVATION COVERAGE · ALL SUBSCRIPTIONS"; color: Color.accent; font.bold: true }
+                Repeater {
+                    model: root.providers
+                    Row {
+                        required property var modelData
+                        width: parent.width
+                        spacing: Style.space(8)
+                        Label { width: parent.width * 0.24; text: modelData.name; font.bold: true }
+                        Label { width: parent.width * 0.25; text: root.reportCoverage(modelData) }
+                        Label { width: parent.width * 0.25; text: modelData.outcomes.available ? 'Outcome counts observed · incomplete' : 'No outcome summary' }
+                        Label { width: parent.width * 0.26; text: modelData.billing.available ? 'Invoices observed · incomplete' : 'No billing history' }
+                    }
+                }
+                Row {
+                    width: parent.width
+                    spacing: Style.space(8)
+                    Label {
+                        width: parent.width - importHelpAction.implicitWidth - Style.space(8)
+                        color: root.secondary
+                        text: root.providers.length
+                            ? root.importStatus(root.providers[0].reportImport, 'Report') + '  ·  '
+                                + root.importStatus(root.providers[0].outcomeImport, 'Outcome')
+                            : 'Import status unavailable'
+                    }
+                    Action {
+                        id: importHelpAction
+                        title: root.showImportHelp ? 'Hide import help' : 'Import help'
+                        onActivated: root.showImportHelp = !root.showImportHelp
+                    }
+                }
+                Label {
+                    width: parent.width
+                    visible: root.showImportHelp
+                    color: root.secondary
+                    text: "OpenCode JSON/Console CSV exports: copy into ~/.local/state/tmos-ai-usage/imports/ and refresh (with --state-dir, use that directory's imports/). For billing, run collector/billing_ledger.py --invoice <record.json> --evidence <private-receipt>; keep source material local. For outcome capture, use collector/task_runner.py run/verify/accept or put event JSONL in outcome-events/. Rejected and waiting counts above identify import problems without showing filenames or paths."
+                }
+            }
+            Rectangle { width: parent.width; height: 1; color: root.secondary; opacity: 0.4 }
+            Row {
+                width: parent.width
+                Label { width: parent.width * 0.35; text: "SUBSCRIPTION"; color: Color.accent }
+                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS / $ *" : "TASKS / $"; color: Color.accent }
+                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS · 30D" : "VALIDATED"; color: Color.accent }
+                Label { width: parent.width * 0.21; text: root.activityMode ? "USD / MONTH" : "SPEND (USD)"; color: Color.accent }
+            }
+            Repeater {
+                model: root.selected ? [root.selected] : root.providers
+                Column {
+                    required property var modelData
+                    width: parent.width
+                    spacing: Style.space(8)
+                    Row {
+                        width: parent.width
+                        Label { width: parent.width * 0.35; text: modelData.valueLabel + " · " + modelData.name }
+                        Label { width: parent.width * 0.22; text: root.value(modelData) }
+                        Label { width: parent.width * 0.22; text: root.metric(root.activityMode ? modelData.activity.observed_turns : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.validated_tasks : null)) }
+                        Label { width: parent.width * 0.21; text: root.metric(root.activityMode ? (modelData.activity.price ? modelData.activity.price.monthly_usd : null) : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.spend_usd : null)) }
+                    }
+                    Label { width: parent.width; color: root.secondary; text: root.activityMode ? (modelData.activity.price ? modelData.activity.price.basis + ' · ' + root.metric(modelData.activity.pi_turns) + ' Pi turns included' : modelData.activity.reason || 'No local activity data') : modelData.economicsReason }
+                }
+            }
+            Column {
+                visible: !root.selected
+                width: parent.width
+                spacing: Style.space(8)
                 Label { text: "CAPACITY OVERLAY · % REMAINING"; color: Color.accent; font.bold: true }
                 Canvas {
                     id: overlay
@@ -125,7 +217,7 @@ Rectangle {
                     onPaint: {
                         var ctx = getContext('2d'); ctx.reset();
                         var left = 38, right = width - 20, top = 20, bottom = height - 30;
-                        ctx.font = '12px ' + Style.font.family;
+                        ctx.font = String(Style.font.caption) + 'px ' + Style.font.family;
                         ctx.strokeStyle = muted; ctx.fillStyle = ink;
                         for (var v = 0; v <= 100; v += 50) {
                             var y = bottom - v / 100 * (bottom - top);
@@ -163,29 +255,49 @@ Rectangle {
                 }
                 Label { width: parent.width; color: root.secondary; text: "5h / week / month headroom; missing limits have gaps. Each subscription has its own reset schedule. Capacity is separate from task value." }
             }
-            Rectangle { width: parent.width; height: 1; color: root.secondary; opacity: 0.4 }
-            Row {
+            Column {
+                visible: !root.selected && root.hasComparableActivityAndCash(root.providers)
                 width: parent.width
-                Label { width: parent.width * 0.35; text: "SUBSCRIPTION"; color: Color.accent }
-                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS / $ *" : "TASKS / $"; color: Color.accent }
-                Label { width: parent.width * 0.22; text: root.activityMode ? "TURNS · 30D" : "VALIDATED"; color: Color.accent }
-                Label { width: parent.width * 0.21; text: root.activityMode ? "USD / MONTH" : "SPEND (USD)"; color: Color.accent }
-            }
-            Repeater {
-                model: root.selected ? [root.selected] : root.providers
-                Column {
-                    required property var modelData
+                spacing: Style.space(6)
+                Label { text: "OBSERVED TURNS AND CASH PAID · INDEPENDENT SCALES"; color: Color.accent; font.bold: true }
+                Label { width: parent.width; color: root.secondary; text: "Bars show captured totals only. Turns use the left scale; cash paid uses the right scale. Each value carries its own observation window; these totals do not establish cost per turn and billing does not affect rankings." }
+                Canvas {
+                    id: activityCashChart
                     width: parent.width
-                    spacing: Style.space(8)
-                    Row {
-                        width: parent.width
-                        Label { width: parent.width * 0.35; text: modelData.valueLabel + " · " + modelData.name }
-                        Label { width: parent.width * 0.22; text: root.value(modelData) }
-                        Label { width: parent.width * 0.22; text: root.metric(root.activityMode ? modelData.activity.observed_turns : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.validated_tasks : null)) }
-                        Label { width: parent.width * 0.21; text: root.metric(root.activityMode ? (modelData.activity.price ? modelData.activity.price.monthly_usd : null) : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.spend_usd : null)) }
+                    height: Math.max(Style.space(100), root.providers.length * Style.space(28) + Style.space(24))
+                    property var rows: root.providers
+                    property color ink: Color.foreground
+                    property color accent: Color.accent
+                    property color muted: root.secondary
+                    onRowsChanged: requestPaint()
+                    onWidthChanged: requestPaint()
+                    onPaint: {
+                        var ctx = getContext('2d'); ctx.reset();
+                        var turns = rows.map(p => p.activity && typeof p.activity.observed_turns === 'number' ? p.activity.observed_turns : null);
+                        var cash = rows.map(p => p.billing && typeof p.billing.cashPaidUsd === 'number' ? p.billing.cashPaidUsd : null);
+                        var maxTurns = 0, maxCash = 0;
+                        turns.forEach(function(n) { if (n !== null && n > maxTurns) maxTurns = n; });
+                        cash.forEach(function(n) { if (n !== null && n > maxCash) maxCash = n; });
+                        var left = 135, right = width - 115, rowH = Style.space(28), top = 12;
+                        ctx.font = String(Style.font.caption) + 'px ' + Style.font.family;
+                        ctx.fillStyle = muted; ctx.fillText('turns · max ' + (maxTurns || '—'), left, 10);
+                        ctx.fillText('cash · max $' + (maxCash ? maxCash.toFixed(2) : '—'), right + 8, 10);
+                        rows.forEach(function(p, i) {
+                            var y = top + i * rowH + 8;
+                            ctx.fillStyle = ink; ctx.fillText(p.name, 0, y + 10);
+                            if (turns[i] !== null && maxTurns > 0) {
+                                ctx.fillStyle = accent; ctx.fillRect(left, y, Math.max(2, (right-left) * turns[i] / maxTurns), 7);
+                                ctx.fillStyle = ink; ctx.fillText(String(turns[i]) + ' / ' + (p.activity.window_days || '?') + 'd', right + 8, y + 7);
+                            } else { ctx.fillStyle = muted; ctx.fillText('—', right + 8, y + 7); }
+                            if (cash[i] !== null && maxCash > 0) {
+                                ctx.fillStyle = ink; ctx.globalAlpha = 0.72;
+                                ctx.fillRect(left, y + 10, Math.max(2, (right-left) * cash[i] / maxCash), 5);
+                                ctx.globalAlpha = 1; ctx.fillStyle = ink; ctx.fillText('$' + cash[i].toFixed(2), right + 8, y + 17);
+                            }
+                        });
                     }
-                    Label { width: parent.width; color: root.secondary; text: root.activityMode ? (modelData.activity.price ? modelData.activity.price.basis + ' · ' + root.metric(modelData.activity.pi_turns) + ' Pi turns included' : modelData.activity.reason || 'No local activity data') : modelData.economicsReason }
                 }
+                Label { width: parent.width; color: root.secondary; text: "Upper bar: observed turns (count / observed days). Lower bar: cash paid (USD) in the billing window. Separate scales and potentially different windows; do not read these as a cost comparison." }
             }
             Column {
                 visible: root.selected !== null
@@ -234,6 +346,14 @@ Rectangle {
                 Label { width: parent.width; color: root.secondary; text: root.selected ? (root.selected.report.note || "Detailed request health is unavailable for this source.") : '' }
                 Label {
                     width: parent.width
+                    color: root.secondary
+                    text: root.selected
+                        ? root.importStatus(root.selected.reportImport, 'Report') + '  ·  '
+                            + root.importStatus(root.selected.outcomeImport, 'Outcome')
+                        : ''
+                }
+                Label {
+                    width: parent.width
                     visible: root.selected !== null && !!root.selected.report.coverage
                     color: Color.accent
                     text: {
@@ -260,6 +380,51 @@ Rectangle {
                         width: parent.width
                         text: modelData.name + ' · ' + root.metric(modelData.requests) + ' requests · input ' + root.metric(modelData.input)
                             + ' · output ' + root.metric(modelData.output) + ' · cache read ' + root.metric(modelData.cache_read)
+                    }
+                }
+                Label { text: "BILLING HISTORY · OBSERVED ONLY"; color: Color.accent; font.bold: true }
+                Label {
+                    width: parent.width
+                    color: root.secondary
+                    text: root.selected && root.selected.billing.available
+                        ? 'Cash paid: ' + root.cashText(root.selected.billing.cashPaidUsd)
+                            + ' · known service allocation: ' + root.cashText(root.selected.billing.allocatedKnownUsd)
+                            + ' · ' + root.metric(root.selected.billing.unknownPeriods) + ' payment(s) with unknown service period'
+                            + (root.selected.billing.periodStart ? ' · ' + root.selected.billing.periodStart + ' → ' + root.selected.billing.periodEnd : '')
+                            + ' · coverage incomplete'
+                        : 'Billing history unavailable; no amount is assumed.'
+                }
+                Label { width: parent.width; color: root.secondary; text: root.selected && root.selected.billing.available ? root.selected.billing.note : '' }
+                Repeater {
+                    model: root.selected && root.selected.billing.available ? root.selected.billing.invoices : []
+                    Column {
+                        required property var modelData
+                        width: parent.width
+                        spacing: Style.space(2)
+                        Label { width: parent.width; text: modelData.paidAt + ' · paid ' + root.cashText(modelData.paidUsd) + ' · base ' + root.cashText(modelData.baseUsd) + ' · discount ' + root.cashText(modelData.discountUsd) + ' · tax ' + root.cashText(modelData.taxUsd) + ' · fees ' + root.cashText(modelData.feesUsd) }
+                        Label { width: parent.width; color: root.secondary; text: modelData.serviceStart && modelData.serviceEnd ? 'Service period: ' + modelData.serviceStart + ' → ' + modelData.serviceEnd : 'Service period unknown' }
+                    }
+                }
+                Label {
+                    width: parent.width
+                    color: root.secondary
+                    text: "Private receipt import: keep the original source receipt locally, prepare its invoice record, then run python3 <tmos.usage>/collector/billing_ledger.py --state-dir ~/.local/state/tmos-ai-usage --invoice <invoice-record.json> --evidence <private-source-receipt>. Enter processing fees in fees_usd separately from tax. The private ledger retains evidence; this view shows only approved billing fields."
+                }
+                Column {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    visible: root.selected !== null && !!root.selected.consoleReport.note
+                    Label { text: "CONSOLE WORKSPACE REPORT"; color: Color.accent; font.bold: true }
+                    Label { width: parent.width; color: root.secondary; text: root.selected ? root.selected.consoleReport.note || '' : '' }
+                    Label { width: parent.width; text: root.selected ? 'Observed: ' + (root.selected.consoleReport.observed_at || 'unavailable') : '' }
+                    Repeater {
+                        model: root.selected ? Object.keys(root.selected.consoleReport.metrics || {}) : []
+                        Row {
+                            required property string modelData
+                            width: parent.width
+                            Label { width: parent.width * 0.65; text: modelData }
+                            Label { text: root.metric(root.selected.consoleReport.metrics[modelData]) }
+                        }
                     }
                 }
                 Label { text: "PUBLISHED DEALS"; color: Color.accent; font.bold: true }
@@ -303,7 +468,37 @@ Rectangle {
                         + ' · Turns: ' + root.metric(root.selected.economics.turns) + ' · Reworked tasks: ' + root.metric(root.selected.economics.reworked_tasks)
                         + ' · Failed tasks: ' + root.metric(root.selected.economics.failed_tasks) : ''
                 }
-                Label { width: parent.width; text: "TASK OUTCOMES · Turns, validated completions and rework require an outcome ledger. Provider request success alone cannot supply these metrics."; color: root.secondary }
+                Label { text: "TASK OUTCOMES · OBSERVED LEDGER COUNTS"; color: Color.accent; font.bold: true }
+                Label {
+                    width: parent.width
+                    color: root.secondary
+                    text: root.selected && root.selected.outcomes.available
+                        ? root.selected.outcomes.coverageText
+                            + (root.selected.outcomes.interval ? ' · ' + root.selected.outcomes.interval.start + ' → ' + root.selected.outcomes.interval.end : '')
+                        : "No outcome ledger summary is available. Provider request success does not establish task validation."
+                }
+                Label {
+                    width: parent.width
+                    visible: root.selected !== null && root.selected.outcomes.available
+                    text: root.selected && root.selected.outcomes.available
+                        ? 'Tasks ' + root.metric(root.selected.outcomes.counts.tasks) + ' · pending ' + root.metric(root.selected.outcomes.counts.pending)
+                            + ' · validated ' + root.metric(root.selected.outcomes.counts.validated) + ' · failed ' + root.metric(root.selected.outcomes.counts.failed)
+                            + ' · abandoned ' + root.metric(root.selected.outcomes.counts.abandoned) + ' · reworked ' + root.metric(root.selected.outcomes.counts.reworked)
+                            + ' · turns ' + root.metric(root.selected.outcomes.counts.turns) + ' · errors ' + root.metric(root.selected.outcomes.counts.errors)
+                        : ''
+                }
+                Repeater {
+                    model: root.selected && root.selected.outcomes.available ? root.selected.outcomes.cohorts : []
+                    Label {
+                        required property var modelData
+                        width: parent.width
+                        color: root.secondary
+                        text: modelData.name + ' · tasks ' + root.metric(modelData.counts.tasks)
+                            + ' · validated ' + root.metric(modelData.counts.validated) + ' · failed ' + root.metric(modelData.counts.failed)
+                            + ' · turns ' + root.metric(modelData.counts.turns)
+                    }
+                }
+                Label { width: parent.width; color: root.secondary; text: root.selected && root.selected.outcomes.available ? "Observed ledger events are incomplete population coverage. Unrecorded tasks may be missing; these counts do not assert complete coverage." : "No outcome ledger summary is available. Record task lifecycle and turn events with outcome_ledger.py, then refresh the usage report. No counts are inferred from request success." }
             }
         }
     }

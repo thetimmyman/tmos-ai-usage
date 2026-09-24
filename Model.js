@@ -50,7 +50,7 @@ function emptyDocument(error) {
 }
 
 function parseDocument(text, mode) {
-  var doc, observedAt, rows, i
+  var doc, observedAt, rows, i, reportImport, outcomeImport
   if (!text || !String(text).trim()) return emptyDocument("no usage cache yet")
   try {
     doc = JSON.parse(String(text))
@@ -61,12 +61,14 @@ function parseDocument(text, mode) {
     return emptyDocument("usage cache has no providers")
   observedAt = Date.parse(doc.observed_at || "") || 0
   rows = []
-  for (i = 0; i < doc.providers.length; i++) rows.push(normalizeProvider(doc.providers[i], observedAt))
+  reportImport = normalizeImport(doc.report_import, "report")
+  outcomeImport = normalizeImport(doc.outcome_import, "outcome")
+  for (i = 0; i < doc.providers.length; i++) rows.push(normalizeProvider(doc.providers[i], observedAt, reportImport, outcomeImport))
   rows = (mode || doc.comparison_mode) === "activity" ? Value.rankActivity(rows) : Value.rankProviders(rows, doc.economics_context)
   return { ok: true, error: "", providers: rows, observedAt: observedAt, totals: normalizeTotals(doc.totals) }
 }
 
-function normalizeProvider(rawRow, observedAtMs) {
+function normalizeProvider(rawRow, observedAtMs, reportImport, outcomeImport) {
   var id, windows, list, i, w, status, row
   row = rawRow || {}
   id = String(row.provider || "?")
@@ -90,6 +92,11 @@ function normalizeProvider(rawRow, observedAtMs) {
     economicsReason: String(row.economics_reason || "Validated task and spend evidence unavailable."),
     activity: row.activity || {},
     report: row.report || {},
+    outcomes: normalizeOutcomes(row.outcomes),
+    billing: normalizeBilling(row.billing),
+    reportImport: reportImport || normalizeImport(null, "report"),
+    outcomeImport: outcomeImport || normalizeImport(null, "outcome"),
+    consoleReport: row.console_report || {},
     offers: Array.isArray(row.offers) ? row.offers : [],
     // A definition-based provider carries its own display name; a built-in never does, so this
     // leaves every built-in row exactly as it was and lets a definition name itself properly.
@@ -106,6 +113,81 @@ function normalizeProvider(rawRow, observedAtMs) {
     balance: normalizeBalance(row.balance),
     stats: normalizeStats(row.stats)
   }
+}
+
+// Import projections are count-only. Never forward collector notes, paths, names, or errors.
+function normalizeImport(raw, kind) {
+  var fields, result
+  fields = kind === "report"
+    ? [["newCount", "imported"], ["unchangedCount", "unchanged"], ["rejectedCount", "rejected"], ["pendingCount", "deferred"]]
+    : [["newCount", "applied"], ["unchangedCount", "duplicates"], ["rejectedCount", "rejected_files"], ["pendingCount", "pending_files"]]
+  result = { available: false, failed: !!raw && typeof raw === "object", newCount: null, unchangedCount: null, rejectedCount: null, pendingCount: null }
+  if (!raw || typeof raw !== "object") return result
+  fields.forEach(function(pair) { result[pair[0]] = nullableNumber(raw[pair[1]]) })
+  result.available = result.newCount !== null || result.unchangedCount !== null || result.rejectedCount !== null || result.pendingCount !== null
+  result.failed = !result.available
+  return result
+}
+
+function nullableNumber(value) {
+  var n
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") return null
+  n = Number(value)
+  return isFinite(n) ? n : null
+}
+
+// Outcomes are observed ledger counts, never a claim that the whole task population was captured.
+function normalizeOutcomes(raw) {
+  var counts, coverage, cohorts, keys, i, cohortCounts, c
+  if (!raw || typeof raw !== "object" || raw.available === false || !raw.counts || typeof raw.counts !== "object")
+    return { available: false, counts: {}, cohorts: [], coverageText: "No outcome ledger summary is available." }
+  counts = raw.counts
+  coverage = raw.coverage || {}
+  cohorts = []
+  keys = raw.by_cohort && typeof raw.by_cohort === "object" ? Object.keys(raw.by_cohort).sort() : []
+  for (i = 0; i < keys.length; i++) {
+    cohortCounts = raw.by_cohort[keys[i]] || {}
+    c = {};
+    ["tasks", "pending", "validated", "failed", "abandoned", "reworked", "turns", "errors"].forEach(function(k) { c[k] = nullableNumber(cohortCounts[k]) })
+    cohorts.push({ name: keys[i], counts: c })
+  }
+  return {
+    available: true,
+    counts: {
+      tasks: nullableNumber(counts.tasks), pending: nullableNumber(counts.pending),
+      validated: nullableNumber(counts.validated), failed: nullableNumber(counts.failed),
+      abandoned: nullableNumber(counts.abandoned), reworked: nullableNumber(counts.reworked),
+      turns: nullableNumber(counts.turns), errors: nullableNumber(counts.errors)
+    },
+    coverageText: `${String(coverage.kind || "observed ledger events")} · incomplete; observed counts only`,
+    interval: raw.interval || null,
+    cohort: String(raw.cohort || ""), cohorts: cohorts
+  }
+}
+
+// Billing projection is allowlisted: source references, evidence paths, and filenames never cross
+// into the view model. Null amounts remain unknown instead of becoming $0.00.
+function normalizeBilling(raw) {
+  var invoices, i, invoice, result
+  if (!raw || typeof raw !== "object") return { available: false, cashPaidUsd: null, allocatedKnownUsd: null, unknownPeriods: null, complete: false, invoices: [], note: "No billing summary is available." }
+  invoices = []
+  for (i = 0; i < (Array.isArray(raw.invoices) ? raw.invoices.length : 0); i++) {
+    invoice = raw.invoices[i] || {}
+    invoices.push({ paidAt: String(invoice.paid_at || ""), baseUsd: nullableNumber(invoice.base_usd),
+      discountUsd: nullableNumber(invoice.discount_usd), taxUsd: nullableNumber(invoice.tax_usd),
+      feesUsd: nullableNumber(invoice.fees_usd) === null ? 0 : nullableNumber(invoice.fees_usd),
+      paidUsd: nullableNumber(invoice.paid_usd), serviceStart: String(invoice.service_start || ""),
+      serviceEnd: String(invoice.service_end || "") })
+  }
+  result = {
+    cashPaidUsd: nullableNumber(raw.cash_paid_usd),
+    available: invoices.length > 0 || nullableNumber(raw.cash_paid_usd) !== null || nullableNumber(raw.allocated_known_usd) !== null,
+    allocatedKnownUsd: nullableNumber(raw.allocated_known_usd),
+    unknownPeriods: nullableNumber(raw.unknown_service_periods),
+    complete: raw.coverage_complete === true, periodStart: String(raw.period_start || ""),
+    periodEnd: String(raw.period_end || ""), note: String(raw.note || "Observed invoices only."), invoices: invoices
+  }
+  return result
 }
 
 function number(value) {

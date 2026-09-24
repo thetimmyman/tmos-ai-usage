@@ -9,12 +9,15 @@ down the page; clicking a row opens its depth underneath without hiding the othe
 
 ![TMOS AI Usage](preview.png)
 
+The X-RAY preview uses synthetic provider, activity, billing and task-outcome values;
+it contains no account exports or personal amounts.
+
 ## What it shows
 
 For every provider, on the collapsed row:
 
 - its name and plan ("Claude Code · max", "Command Code · GOAT")
-- today's activity ("372.2M today", "1 prompt today")
+- today's activity (token and prompt totals, when available)
 - all three windows — **5h / week / month** — as a remaining-percent meter each, on one line
 - a status badge when the number is not the provider's own (`estimate`, `sign in`, `unknown`, `error`)
 
@@ -219,8 +222,8 @@ exactly why they stay code — and why "any provider" would be an over-claim:
 
 So: a provider that publishes a simple usage or balance JSON at one endpoint can be added as data.
 A provider that needs any of the second half of that table needs a reader in
-`collector/usage_collector.py` — and that is a deliberate boundary, not a gap. Cost and pricing
-tracking is the next feature.
+`collector/usage_collector.py` — and that is a deliberate boundary, not a gap. X-RAY reporting,
+private invoice history and explicit task-outcome capture are documented below.
 
 ## Usage
 
@@ -270,51 +273,45 @@ too.
 - Providers added as data, not code: **shipped**. A validated `providers.d/*.json` definition format
   covers a provider that publishes a simple usage or balance JSON at one endpoint. The built-ins
   stay code on purpose — see [Adding a provider](#adding-a-provider) for where the boundary falls.
-- Cost tracking per model, so the panel can tell you when a plan is being spent on an expensive
-  model, or when a cheaper provider has headroom.
+- Provider request-health reports, export imports, invoice history and observed outcome capture:
+  **available with explicit local sources**. These sources remain distinct from subscription
+  quota and no imported sample implies complete billing or task coverage.
 - Token history for the providers that keep their sessions in SQLite today.
 
 ## License
 
 MIT — see `LICENSE`.
 
-## Inference economics: request-log import (PS-679 preview)
+## Inference X-RAY (0.3)
 
-The planned [Inference X-RAY view](INFERENCE-XRAY.md) is an upgrade to this plugin:
-Overview first, then subscriptions ranked #1, #2, #3 by validated tasks per dollar.
-It will use native Omarchy theme tokens and retain this repository and marketplace
-identity. The linked design records comparison semantics and the release work still
-needed; the native dashboard is not released yet.
+TMOS AI Usage includes a native, Omarchy-themed comparison dashboard. Open the
+budget dropdown and choose **Open Inference X-RAY**. Overview, subscription tabs,
+and the dropdown use one ranking. The default `#1*` comparison measures observed
+local turns per current monthly fee; **Validated tasks / $** uses complete scoped
+outcome and recognized-spend evidence. Neither successful HTTP requests nor agent
+completion messages count as validated work.
 
-An offline importer is available for OpenCode's `request-logs-*.json` exports:
+The collector refreshes quotas, local usage, provider reports, an explicit export
+inbox, outcome events, billing projections, and sourced deal observations. Invoice
+payments, service-period cost allocation, API usage charges, promotional credits,
+and subscription prices remain distinct. Missing data stays unknown.
 
-```sh
-python3 collector/request_log_import.py ~/Downloads/request-logs-2026-09-24.json \
-  --ledger ~/.local/state/tmos-ai-usage/opencode-requests.json
-```
+See [ECONOMICS.md](ECONOMICS.md) for setup, supported sources, task capture,
+invoice imports, comparison publication, and trust boundaries. This remains the
+same `tmos.usage` plugin and public repository; this will be its first Omarchy
+marketplace listing. Do not create a duplicate plugin identity or source repository.
+The overview places per-subscription report, outcome and billing coverage ahead of
+the ranking rows. Import diagnostics show counts only; source filenames, receipt
+references and credentials stay out of the view.
 
-It writes a private, locked, atomically replaced ledger and prints a summary. Re-importing
-overlapping files is safe: identity uses the provider's log-row `id`, because `requestID`
-can repeat across distinct inference calls. Conflicting observations fail for reconciliation.
-Headers, location, API-key identifiers and arbitrary metadata are discarded; workspace,
-session and correlation identifiers are hashed. Keep the source export outside the repository.
-
-The summary distinguishes final request success from failed upstream attempts, keeps token
-categories separate, reports latency percentiles and preserves truncated-export coverage.
-Missing cost and task outcomes remain null. The JSON's bare `cost` has no declared unit,
-so it is not labeled USD or subscription cash spent. Task verification and rework require
-dispatch/attempt evidence joins; a successful HTTP response does not establish a completed task.
-
-This importer is an initial development slice, not yet connected to the QML panel or timer.
-The documented [OpenCode Usage API](https://opencode.ai/v2/docs/console/usage/) offers a
-separate CSV export using a service-account key and explicit charge units; it is not this JSON
-schema. A service-account key is required for that future automatic collector. The existing Go
-allowance credential is not assumed to grant report access.
-
-Run importer checks: `python3 -m unittest discover -s collector -p 'test_request_log_import.py'`.
-
-## Inference X-RAY (0.2)
-
-The budget popup opens a native comparison dashboard with shared subscription ranks,
-provider reports and dated offer observations. See [ECONOMICS.md](ECONOMICS.md) for
-imports, evidence requirements, supported reports and current integration limits.
+Run `bash scripts/check.sh` before release. This covers offline/degraded collection,
+accounting and evidence regressions, shared ordering, native QML runtime and the
+Omarchy manifest. The marketplace registry currently has no listing for `tmos.usage`;
+after the change is merged to the public repository, submit its initial listing with
+the [Omarchy plugin submission form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml)
+following the [publishing guide](https://plugins.omarchy.org/publish.html). For
+later listing updates, use the [plugin verification/update form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
+and provide the exact target commit. For a git-managed local installation, the
+Omarchy update command is `omarchy plugin update tmos.usage`; `omarchy plugin validate
+<plugin-folder>` checks the manifest. The working branch has not been submitted or
+published.

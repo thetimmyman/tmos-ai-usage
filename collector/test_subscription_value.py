@@ -43,3 +43,32 @@ class SubscriptionValueTest(unittest.TestCase):
             doc={'providers':[{'provider':'opencode-go','plan':'OpenCode Go'}]}
             v.attach(doc,d,now)
             self.assertIsNone(doc['providers'][0]['activity']['price'])
+
+    def test_receipt_price_requires_and_records_digest_without_exposing_invoice_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                v.save_price(d, 'codex', 12.34, 'month', source_kind='receipt')
+            with self.assertRaises(ValueError):
+                v.save_price(d, 'codex', 12.34, 'month', source_kind='receipt', source_sha256='bad')
+            digest='a'*64
+            v.save_price(d, 'codex', 12.34, 'month', source_kind='receipt', source_sha256=digest)
+            stored=json.loads(Path(d,'subscriptions.json').read_text())['codex']
+            self.assertEqual(stored['source_kind'],'receipt')
+            self.assertEqual(stored['source_sha256'],digest)
+            row={'provider':'codex'}
+            value=v.price_for(row, {'codex':stored}, datetime.now(timezone.utc))
+            self.assertEqual(value['source_kind'],'receipt')
+            self.assertEqual(value['basis'],'last invoice amount — not guaranteed future charge')
+            self.assertEqual(value['source'],'Local private invoice receipt')
+            exposed=json.dumps(value).lower()
+            self.assertNotIn('http',exposed)
+            self.assertNotIn('@',exposed)
+            self.assertNotIn(digest,exposed)
+
+    def test_user_price_remains_the_default_provenance(self):
+        with tempfile.TemporaryDirectory() as d:
+            v.save_price(d, 'codex', 12, 'month')
+            stored=json.loads(Path(d,'subscriptions.json').read_text())['codex']
+            value=v.price_for({'provider':'codex'}, {'codex':stored}, datetime.now(timezone.utc))
+            self.assertEqual(value['source_kind'],'user')
+            self.assertEqual(value['basis'],'user-entered subscription fee')

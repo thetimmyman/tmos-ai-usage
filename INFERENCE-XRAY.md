@@ -1,10 +1,13 @@
 # Inference X-RAY — TMOS AI Usage evolution (PS-679)
 
 Accepted direction, 2026-09-24. This expands TMOS AI Usage, with its existing
-`tmos.usage` identity and `thetimmyman/tmos-ai-usage` repository. Do not create a
-second plugin, duplicate collector service, or second marketplace listing.
-The native implementation is pending; the conversation preview demonstrates the
-layout with observed data and explicit missing evidence.
+`tmos.usage` identity and `thetimmyman/tmos-ai-usage` repository. The native QML
+dashboard and local evidence projections are implemented in this source tree;
+this document records the design constraints and separates current behavior from
+future scope. Keep this plugin identity and repository; the marketplace registry
+does not yet list it, so publication requires an initial listing submission after
+the implementation is merged. Do not create a duplicate plugin or source repository.
+Implementation, verification, merge and publication remain separate states.
 
 ## Surfaces and ordering
 
@@ -15,24 +18,23 @@ none may independently sort by quota, name or tokens after ranking. The dropdown
 shows the same rank labels beside subscription names. The bar's tightest-budget
 warning remains a separate alert, not the economic score.
 Overview is the first/default tab and compares every configured subscription.
-Subscription tabs follow in descending **validated tasks per actual dollar**,
-with prominent numeric ranks (#1, #2, #3...) mirrored in the overview table and
-selected subscription heading. Exact ties share a rank (1, 1, 3) and use stable
-subscription identity for secondary ordering. Keep the selected subscription by
-ID when refreshing, never by its previous index.
+The selected metric controls the shared provider order: provisional observed local
+turns per monthly fee is the default; **Validated tasks / $** is available only
+when scoped, complete outcome and recognized-spend evidence qualifies. Tabs and
+the overview use that same ranked list. Incomplete records stay unranked. Keep
+the selected subscription by ID when refreshing, never by its previous index.
 
 Rank account/subscription pools, not just provider brands: two genuinely separate
 subscriptions can have separate rows, while one pool shared across clients must
 not be duplicated. The initial preview uses the five configured provider rows;
 account-level identity still needs collector integration.
 
-Overview contains a common-period value comparison and overlays all subscriptions
-on shared axes. Default economic series: validated tasks per dollar over time once
-history exists. Additional overlays: spend, validated output, retries/provider
-errors and capacity. The current preview shows available capacity across quota
-windows; it does not substitute this for economic ranking. Missing samples remain
-gaps, never fabricated zeros. Series have stable theme-derived colors plus labels
-and distinct markers/line styles. Unknown cost/outcome cohorts remain visible.
+The overview shows outcome, billing and report coverage before the ranking table.
+Capacity has its own overlay. When both observed turns and invoice cash exist, a
+separate chart uses independent scales and labels their observation windows; it
+does not calculate cost per turn or influence rankings. Missing samples remain
+gaps, never fabricated zeros. Historical value series and account-level pool
+identity are future scope; provider rows currently follow the configured sources.
 
 ## Score and attribution
 
@@ -84,6 +86,10 @@ imports. Then test hot theme changes in both light and dark themes, multiple fon
 scales, keyboard navigation, narrow screens, missing providers, no outcomes, zero
 spend, tied scores, stale/partial exports, and reinstall/upgrade behavior. Refresh
 the README, preview image, changelog and version only when the native feature is
-implemented and verified. Submit an update through the existing marketplace route.
-Source implementation, merge, deployment, theme verification and marketplace
-submission are separate completion states; none are implied by this design.
+implemented and verified. For the first listing, merge to the public repository,
+then use the [Omarchy submission form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml)
+and its [publishing guide](https://plugins.omarchy.org/publish.html). Later listing
+updates use the [verification/update form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
+with an exact target commit. Source implementation, merge, deployment, theme
+verification and marketplace submission are separate completion states; none are
+implied by this design.

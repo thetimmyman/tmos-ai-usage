@@ -100,6 +100,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -2477,7 +2478,7 @@ def collect_clinepass() -> dict:
             token = data.get("nextToken")
             if not batch or not token or (oldest and oldest < cutoff):
                 break
-            url = f"{base}/api/v1/users/{user_id}/usages?limit=100&nextToken={token}"
+            url = f"{base}/api/v1/users/{user_id}/usages?" + urllib.parse.urlencode({"limit": 100, "cursor": token})
             if page == 24:
                 truncated = True
     out = parse_clinepass(plan, items)
@@ -3658,6 +3659,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="write the cache here instead of the plugin's own state directory",
     )
+    ap.add_argument("--no-offer-refresh", action="store_true", help="use bundled deal observations without a public documentation fetch")
+    ap.add_argument("--no-console-report", action="store_true", help="skip optional Console service-account export")
     args = ap.parse_args(argv)
 
     if args.selftest:
@@ -3673,15 +3676,22 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     configure_paths(args.state_dir)
-    document = collect_all(args.only, local_stats=not args.no_stats)
-    import inference_reports
-    inference_reports.attach_local(document, STATE_DIR)
-    try:
-        write_cache(document, configure_paths(args.state_dir))
-    except OSError as exc:
-        print(f"warning: could not write {CACHE_PATH}: {_scrub(exc)}", file=sys.stderr)
-    if args.json:
-        print(json.dumps(document, indent=2))
+    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with os.fdopen(os.open(STATE_DIR / 'collector.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'w') as collector_lock:
+        try:
+            fcntl.flock(collector_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # The active collector owns publication; do not let an older refresh overwrite it.
+            return 0
+        document = collect_all(args.only, local_stats=not args.no_stats)
+        import inference_reports
+        inference_reports.attach_local(document, STATE_DIR, refresh_offers=not args.no_offer_refresh, refresh_console=not args.no_console_report)
+        try:
+            write_cache(document, configure_paths(args.state_dir))
+        except OSError as exc:
+            print(f"warning: could not write {CACHE_PATH}: {_scrub(exc)}", file=sys.stderr)
+        if args.json:
+            print(json.dumps(document, indent=2))
     return 0
 
 

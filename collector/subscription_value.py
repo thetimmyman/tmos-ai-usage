@@ -7,6 +7,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -41,10 +42,17 @@ def atomic_json(path, value):
         if os.path.exists(temp): os.unlink(temp)
 
 
-def save_price(directory, provider, price, cycle):
+def save_price(directory, provider, price, cycle, *, source_kind='user', source_sha256=None):
     if provider not in PROVIDERS or cycle not in ('month', 'year'):
         raise ValueError('unsupported provider or billing cycle')
     amount(price)
+    if source_kind not in ('user', 'receipt'):
+        raise ValueError('unsupported price source')
+    if source_kind == 'receipt':
+        if not isinstance(source_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', source_sha256):
+            raise ValueError('receipt-derived price requires a SHA-256 source digest')
+    elif source_sha256 is not None:
+        raise ValueError('source digest is only valid for receipt-derived prices')
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     with os.fdopen(os.open(directory / 'subscriptions.lock', os.O_CREAT | os.O_RDWR, 0o600), 'w') as lock:
@@ -52,8 +60,9 @@ def save_price(directory, provider, price, cycle):
         path = directory / 'subscriptions.json'
         data = json.loads(path.read_text()) if path.exists() else {}
         if not isinstance(data, dict): raise ValueError('invalid subscription settings')
-        data[provider] = {'amount_usd': price, 'cycle': cycle,
+        data[provider] = {'amount_usd': price, 'cycle': cycle, 'source_kind': source_kind,
                           'recorded_at': datetime.now(timezone.utc).isoformat()}
+        if source_kind == 'receipt': data[provider]['source_sha256'] = source_sha256
         atomic_json(path, data)
 
 
@@ -63,9 +72,21 @@ def price_for(row, configured, now):
         p = configured[provider]
         total = amount(p['amount_usd'])
         if p['cycle'] not in ('month', 'year'): raise ValueError('invalid cycle')
+        source_kind = p.get('source_kind', 'user')
+        if source_kind not in ('user', 'receipt'): raise ValueError('invalid price source')
+        if source_kind == 'receipt' and (not isinstance(p.get('source_sha256'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', p['source_sha256'])):
+            raise ValueError('invalid receipt source digest')
+        if source_kind == 'receipt':
+            basis = 'last invoice amount — not guaranteed future charge'
+            source = 'Local private invoice receipt'
+        else:
+            basis = 'user-entered subscription fee'
+            source = 'Local subscription settings'
         return {'monthly_usd': total / (12 if p['cycle'] == 'year' else 1),
-                'amount_usd': total, 'cycle': p['cycle'], 'basis': 'user-entered subscription fee',
-                'source': 'Local subscription settings', 'estimated': False}
+                'amount_usd': total, 'cycle': p['cycle'], 'basis': basis,
+                'source': source, 'source_kind': source_kind, 'estimated': False,
+                'recorded_at': p.get('recorded_at')}
     quote = row.get('subscription_quote')
     if provider == 'clinepass' and isinstance(quote, dict):
         total = amount(quote['amount_usd'])
@@ -122,6 +143,9 @@ if __name__ == '__main__':
     parser.add_argument('--provider', choices=PROVIDERS, required=True)
     parser.add_argument('--amount', type=float, required=True)
     parser.add_argument('--cycle', choices=('month', 'year'), required=True)
+    parser.add_argument('--source-kind', choices=('user', 'receipt'), default='user')
+    parser.add_argument('--source-sha256', help='required only for receipt-derived prices')
     args = parser.parse_args()
-    try: save_price(args.state_dir, args.provider, args.amount, args.cycle)
+    try: save_price(args.state_dir, args.provider, args.amount, args.cycle,
+                    source_kind=args.source_kind, source_sha256=args.source_sha256)
     except (OSError, ValueError, TypeError) as error: parser.exit(2, str(error) + '\n')

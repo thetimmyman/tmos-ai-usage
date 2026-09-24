@@ -23,12 +23,27 @@ class ReportsTest(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(r))
         self.assertNotIn('validated_tasks', r)
     def test_cline_partial_metrics_and_privacy(self):
-        c = self.client([{'data': {'id': 'a/b'}}, {'data': {'items': [{'promptTokens': 5, 'costUsd': .2, 'metadata': 'secret'}, {'promptTokens': 6}]}}])
+        c = self.client([{'data': {'id': 'a/b'}}, {'data': {'items': [{'id': '1', 'promptTokens': 5, 'costUsd': .2, 'metadata': 'secret'}, {'id': '2', 'promptTokens': 6}]}}])
         r = reports.cline_report(c, 'key', 'https://example.com')
         self.assertIn('a%2Fb', self.urls[-1])
         self.assertEqual(r['metrics']['Input tokens'], 11)
         self.assertIsNone(r['metrics']['Reported cost (unverified units)'])
         self.assertNotIn('secret', json.dumps(r))
+    def test_cline_cursor_deduplication_and_repeated_page(self):
+        page = {'items': [{'id':'1', 'promptTokens':5}], 'nextToken':'a&b'}
+        c = self.client([{'id':'u'}, page, {'items':[{'id':'1','promptTokens':5},{'id':'2','promptTokens':7}], 'nextToken':'next'}, {'items':[{'id':'2','promptTokens':7}], 'nextToken':'next'}])
+        r = reports.cline_report(c,'key','https://example.com')
+        self.assertIn('cursor=a%26b',self.urls[2])
+        self.assertEqual(r['metrics']['Input tokens'],12)
+        self.assertEqual(r['metrics']['Observed billing records'],2)
+        self.assertFalse(r['collection']['endpoint_exhausted'])
+        self.assertIn('Repeated',r['note'])
+    def test_cline_page_failure_preserves_results(self):
+        c = self.client([{'id':'u'}, {'items':[{'id':'1','promptTokens':5}], 'nextToken':'next'}])
+        r = reports.cline_report(c,'key','https://example.com')
+        self.assertEqual(r['metrics']['Input tokens'],5)
+        self.assertFalse(r['collection']['endpoint_exhausted'])
+        self.assertIn('unavailable',r['note'])
     def test_unknown_numeric(self):
         for n in [True, -1, float('nan'), '3', None]: self.assertIsNone(reports.numeric(n))
     @patch("pi_activity.scan", return_value={})
@@ -54,6 +69,11 @@ class EvidenceTest(unittest.TestCase):
                 {'id': 'two', 'status': 'failed', 'turns': 1, 'reworked': False, 'evidence_sha256': 'b'*64}]}
             spend = {**common, 'basis': 'recognized_subscription_and_metered_usd', 'charges': [
                 {'id': 'bill', 'recognized_usd': 10, 'evidence_sha256': 'c'*64}]}
+            for entry in outcomes['tasks'] + spend['charges']:
+                raw = json.dumps({'synthetic_evidence_for':entry['id']}).encode()
+                digest = hashlib.sha256(raw).hexdigest()
+                entry['evidence_sha256'] = digest
+                (directory / 'evidence' / (digest+'.json')).write_bytes(raw)
             refs = {}
             for kind, obj in [('outcomes', outcomes), ('spend', spend)]:
                 raw = json.dumps(obj).encode()

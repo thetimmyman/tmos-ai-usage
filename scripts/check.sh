@@ -42,7 +42,7 @@ env TMOS_USAGE_STATE_DIR="$TMPRUN" HOME="$TMPRUN" \
     OPENCODE_GO_BASE="$DEAD" CLINE_API_BASE="$DEAD" COMMAND_CODE_API_BASE="$DEAD" \
     CLAUDE_API_BASE="$DEAD" CODEX_BACKEND_BASE="$DEAD" \
     TMOS_USAGE_PROVIDERS_DIR="$FIXDEFS" \
-    "$PY" collector/usage_collector.py --once >/dev/null 2>&1
+    "$PY" collector/usage_collector.py --once --no-offer-refresh --no-console-report >/dev/null 2>&1
 degraded_rc=$?
 "$PY" - "$TMPRUN/usage.json" <<'PYEOF'
 import json, sys

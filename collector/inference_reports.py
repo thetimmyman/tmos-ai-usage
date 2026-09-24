@@ -34,26 +34,96 @@ def command_report(c, key, base, subscription):
                 'Output tokens': 'totalTokensOut', 'Credits consumed': 'totalCredits'}.items()}}
 
 
-def cline_report(c, key, base):
+def cline_report(c, key, base, max_pages=10):
+    """Bounded cursor walk; keep partial results when a later page fails."""
     me = unwrap(c.http_json(base + '/api/v1/users/me', key))
     user = me.get('id')
     if not user:
         return {'note': 'Provider did not return an account ID.'}
-    data = unwrap(c.http_json(base + '/api/v1/users/' + quote(str(user), safe='') + '/usages?limit=100', key))
-    items = data.get('items') or []
-    metrics = {'Observed billing records': len(items)}
+    items, seen, cursors = [], set(), set()
+    cursor = None
+    reason = 'Page limit reached; partial history.'
+    pages = 0
+    exhausted = False
+    for _ in range(max_pages):
+        params = {'limit': 100}
+        if cursor: params['cursor'] = cursor
+        try:
+            data = unwrap(c.http_json(base + '/api/v1/users/' + quote(str(user), safe='') + '/usages?' + urlencode(params), key))
+            page = data.get('items')
+            if not isinstance(page, list) or any(not isinstance(i, dict) or not isinstance(i.get('id'), str) for i in page):
+                raise ValueError('invalid page')
+            next_cursor = data.get('nextToken')
+            if next_cursor is not None and not isinstance(next_cursor, str):
+                raise ValueError('invalid cursor')
+        except Exception:
+            reason = 'History page unavailable; collected pages retained.'
+            break
+        pages += 1
+        added = 0
+        for item in page:
+            if item['id'] not in seen:
+                seen.add(item['id']); items.append(item); added += 1
+        if not next_cursor:
+            exhausted = True
+            reason = 'Reached the end of provider history returned by this endpoint.'
+            break
+        if next_cursor in cursors or (page and added == 0):
+            reason = 'Repeated provider page detected; partial history.'
+            break
+        cursors.add(next_cursor)
+        cursor = next_cursor
+    metrics = {'Observed billing records': len(items), 'Pages collected': pages}
     for field, label in [('promptTokens', 'Input tokens'), ('completionTokens', 'Output tokens'), ('cachedTokens', 'Cached tokens'), ('costUsd', 'Reported cost (unverified units)')]:
         values = [numeric(i.get(field)) for i in items]
         metrics[label] = sum(values) if values and all(v is not None for v in values) else None
-    return {'source': 'Cline usage API', 'observed_at': c._iso(c._now()), 'metrics': metrics,
-            'note': 'Latest 100 billing records (bounded sample). Provider cost units are unverified and not subscription spend. Task outcomes unavailable.'}
+    groups = {}
+    for item in items:
+        name = str(item.get('aiModelName') or 'Unknown model')[:120]
+        groups.setdefault(name, []).append(item)
+    def total(rows, field):
+        values = [numeric(r.get(field)) for r in rows]
+        return sum(values) if all(v is not None for v in values) else None
+    models = [{'name': name, 'requests': len(rows), 'input': total(rows, 'promptTokens'),
+               'output': total(rows, 'completionTokens'), 'cache_read': total(rows, 'cachedTokens')}
+              for name, rows in sorted(groups.items())]
+    return {'source': 'Cline paginated usage API', 'observed_at': c._iso(c._now()), 'metrics': metrics,
+            'models': models, 'collection': {'pages': pages, 'endpoint_exhausted': exhausted,
+                                            'bounded': True, 'max_records': max_pages * 100},
+            'note': reason + ' At most ' + str(max_pages * 100) + ' recent billing records per refresh. Provider cost units are unverified and not subscription spend. Task outcomes unavailable.'}
 
 
-def attach_local(document, directory):
+def attach_local(document, directory, refresh_offers=False, refresh_console=False):
     """Private optional projections. Missing/malformed evidence leaves rankings unavailable."""
     directory = Path(directory)
+    import report_ingest
+    import outcome_ingest
     try:
-        offers = json.loads(Path(__file__).with_name('offer-observations.json').read_text())
+        document['report_import'] = report_ingest.ingest(directory)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        document['report_import'] = {'note': 'Report inbox unavailable or invalid; previous report retained.'}
+    try:
+        document['outcome_import'] = outcome_ingest.ingest(directory)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        document['outcome_import'] = {'rejected_files': 1}
+    outcome_ingest.attach(document, directory)
+    console = None
+    if refresh_console:
+        try:
+            import console_report
+            console = console_report.fetch(directory)
+        except (OSError, ValueError, KeyError, TypeError):
+            console = {'note':'Console usage API unavailable; verify the explicitly configured service-account key.'}
+    if console is None:
+        try: console = json.loads((directory / 'console-summary.json').read_text())
+        except (OSError, ValueError): pass
+    if isinstance(console, dict):
+        for row in document['providers']:
+            if row['provider'] == 'opencode-go':
+                row['console_report'] = {k:console[k] for k in ('source','observed_at','metrics','note','first_record_at','last_record_at') if k in console}
+    try:
+        import offer_refresh
+        offers = offer_refresh.load(directory) if refresh_offers else json.loads(Path(__file__).with_name('offer-observations.json').read_text())
         for row in document['providers']:
             row['offers'] = [{**o, 'observed_at': offers['observed_at'], 'fresh_for_seconds': offers['fresh_for_seconds']}
                              for o in offers['offers'] if o['provider'] == row['provider']]
@@ -96,8 +166,31 @@ def attach_local(document, directory):
         except (OSError, ValueError, KeyError, TypeError):
             pass
 
+    import billing_ledger
+    billing_ledger.attach(document, directory)
     import subscription_value
     subscription_value.attach(document, directory)
+
+
+def verify_leaf(directory, digest):
+    def checked(ref):
+        if not isinstance(ref, str) or not re.fullmatch(r'[0-9a-f]{64}', ref):
+            raise ValueError('invalid leaf evidence reference')
+        raw = (Path(directory) / 'evidence' / (ref + '.json')).read_bytes()
+        if not raw or hashlib.sha256(raw).hexdigest() != ref:
+            raise ValueError('leaf evidence missing or changed')
+        return raw
+    raw = checked(digest)
+    # Publisher leaves retain their underlying source/semantic snapshots. Verify those bytes
+    # too, without treating identity hashes or external verification IDs as file references.
+    try:
+        leaf = json.loads(raw)
+    except (ValueError, UnicodeError):
+        return
+    if not isinstance(leaf, dict): return
+    if 'source_ledger_sha256' in leaf: checked(leaf['source_ledger_sha256'])
+    for proof in leaf.get('validation_evidence_sha256', []): checked(proof)
+    for allocation in leaf.get('allocations', []): checked(allocation['source_sha256'])
 
 
 def economics_projection(directory, refs, context, provider):
@@ -134,6 +227,7 @@ def economics_projection(directory, refs, context, provider):
             raise ValueError('unfinished task population')
         if not re.fullmatch(r'[0-9a-f]{64}', task['evidence_sha256']):
             raise ValueError('missing validation evidence reference')
+        verify_leaf(directory, task['evidence_sha256'])
         if type(task['turns']) is not int or task['turns'] < 0 or type(task['reworked']) is not bool:
             raise ValueError('invalid task metrics')
         validated += task['status'] == 'validated'
@@ -151,6 +245,7 @@ def economics_projection(directory, refs, context, provider):
     for charge in charges:
         if numeric(charge['recognized_usd']) is None or not re.fullmatch(r'[0-9a-f]{64}', charge['evidence_sha256']):
             raise ValueError('invalid spend evidence')
+        verify_leaf(directory, charge['evidence_sha256'])
     total = sum(c['recognized_usd'] for c in charges)
     if numeric(total) is None:
         raise ValueError('non-finite spend')
