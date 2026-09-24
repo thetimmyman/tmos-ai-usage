@@ -16,6 +16,7 @@ Rectangle {
     signal modeSelected(string mode)
     signal priceSaved(string provider, string amount, string cycle)
     property string priceError: ""
+    property string priceStatus: ""
     property bool savingPrice: false
     property bool showImportHelp: false
     readonly property bool activityMode: providers.length ? providers[0].rankingMetric === 'activity' : true
@@ -353,6 +354,7 @@ Rectangle {
                         onActivated: root.savePriceEditor()
                     }
                 }
+                Label { width: parent.width; visible: root.priceStatus !== "" && root.priceError === ""; text: root.priceStatus; color: Color.accent }
                 Label { width: parent.width; visible: root.priceError !== ''; text: root.priceError; color: Color.urgent }
                 Label {
                     width: parent.width

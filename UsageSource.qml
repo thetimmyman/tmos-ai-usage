@@ -41,6 +41,9 @@ Item {
     property string cachedText: ""
     property bool savingPrice: priceWriter.running
     property string priceError: ""
+    property string priceStatus: ""
+    property var priceRequest: null
+    property bool refreshQueued: false
     onRankingModeChanged: if (cachedText) apply(cachedText)
     property var providers: []
     // Document-level rollup (today's tokens across every subscription, how many reported).
@@ -67,7 +70,7 @@ Item {
     // Manual refresh. The collector writes the cache; the FileView below notices and re-parses, so
     // nothing here parses stdout — one parse path, one truth.
     function refresh() {
-        if (root.refreshing || collector.running) return;
+        if (root.refreshing || collector.running) { root.refreshQueued = true; return; }
         root.refreshing = true;
         root.refreshError = "";
         collector.command = ["python3", root.collectorPath, "--once", "--state-dir", root.stateDir];
@@ -78,9 +81,12 @@ Item {
         var n = Number(amount);
         if (priceWriter.running) return;
         if (!String(amount).trim() || !isFinite(n) || n < 0) {
+            root.priceStatus = "";
             root.priceError = "Enter a nonnegative USD subscription amount."; return;
         }
         root.priceError = "";
+        root.priceStatus = "";
+        root.priceRequest = {provider: provider, amount: n, cycle: cycle};
         priceWriter.command = ["python3", Qt.resolvedUrl("collector/subscription_value.py").toString().replace(/^file:\/\//, ""),
             "--state-dir", root.stateDir, "--provider", provider, "--amount", String(n), "--cycle", cycle];
         priceWriter.running = true;
@@ -89,7 +95,13 @@ Item {
         id: priceWriter
         onExited: function(code) {
             if (code !== 0) root.priceError = "Could not save subscription price.";
-            else root.refresh();
+            else {
+                var request = root.priceRequest;
+                var row = root.providers.filter(p => p.id === request.provider)[0];
+                root.priceStatus = "Saved " + (row ? row.name : request.provider) + ": $"
+                    + request.amount.toFixed(2) + " / " + request.cycle + ".";
+                root.refresh();
+            }
         }
     }
 
@@ -117,6 +129,10 @@ Item {
                     : ("collector exited " + exitCode + " (" + root.collectorPath + ")");
             } else {
                 cache.reload();
+            }
+            if (root.refreshQueued) {
+                root.refreshQueued = false;
+                Qt.callLater(root.refresh);
             }
         }
     }

@@ -170,6 +170,7 @@ Ui.Panel {
                 visible: root.xray
                 providers: root.providers
                 onBackRequested: root.xray = false
+                priceStatus: root.hostWidget ? root.hostWidget.usageSource.priceStatus : ""
                 priceError: root.hostWidget ? root.hostWidget.usageSource.priceError : ""
                 savingPrice: root.hostWidget ? root.hostWidget.usageSource.savingPrice : false
                 onModeSelected: function(mode) { if (root.hostWidget) root.hostWidget.usageSource.rankingMode = mode }
