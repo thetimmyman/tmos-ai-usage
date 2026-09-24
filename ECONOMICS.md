@@ -11,6 +11,10 @@ Native CLI transcripts and `~/.pi/agent/sessions` contribute turns. Pi turns are
 attributed to the first assistant provider following a user message, deduplicated
 by session/entry identity; generic API providers are not assigned to subscriptions.
 Ephemeral `--no-session` workers and other machines are not covered.
+An optional [Pi observer](integration/pi/README.md) also captures new persisted
+assistant-response metadata into pending provider-session segments. These are
+observations, not validated tasks, and do not qualify for task-value rankings.
+The observer must be installed separately in each selected Pi agent directory.
 CLI and Pi logs have no shared request identity: imported/mirrored work across
 those two stores can count twice, so keep each store as its native log source. Provider
 request counts remain separate and are never treated as user turns or validated

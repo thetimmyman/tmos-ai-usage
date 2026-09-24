@@ -2,6 +2,7 @@
 
 ## 0.3.0 source update · 2026-09-24 (not yet published)
 
+- Add an optional Pi extension for private, pending-only provider activity capture, with bounded writes, replay deduplication, and no automatic task validation.
 - Resume Cline billing-history pagination across refreshes with private account-scoped checkpoints and deduplication; distinguish local activity from provider report coverage.
 - Simplify the overview: put ranked values first, align numeric columns, and show compact request, validation, and receipt coverage without overflowing rows.
 - Confirm successful price saves and queue a follow-up refresh when a save overlaps an active collection, so rankings receive the persisted fee.

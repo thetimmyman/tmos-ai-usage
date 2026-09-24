@@ -424,9 +424,9 @@ Rectangle {
                     text: {
                         if (!root.selected || !root.selected.report.coverage) return '';
                         var c = root.selected.report.coverage;
-                        return (c.contains_truncated_export ? 'TRUNCATED EXPORT' : 'PARTIAL IMPORT')
-                            + ' · ' + root.timestamp(c.first_started_at_ms)
-                            + ' → ' + root.timestamp(c.last_started_at_ms);
+                        return root.reportCoverageText(root.selected)
+                            + (typeof c.first_started_at_ms === 'number' && typeof c.last_started_at_ms === 'number'
+                               ? ' · ' + root.timestamp(c.first_started_at_ms) + ' → ' + root.timestamp(c.last_started_at_ms) : '');
                     }
                 }
                 Repeater {

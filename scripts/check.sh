@@ -24,6 +24,8 @@ echo "== request-log importer: offline accounting and privacy checks"
 "$PY" -m unittest discover -s collector -p 'test_*.py' || rc=1
 echo "== subscription ranking: shared model checks"
 node scripts/test-value.cjs || rc=1
+echo "== Pi observer: private pending activity export"
+node --test integration/pi/observer.test.js || rc=1
 
 echo "== collector: fixture selftest (offline)"
 "$PY" collector/usage_collector.py --selftest
