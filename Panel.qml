@@ -53,6 +53,19 @@ Ui.Panel {
     // the list, and two open rows would push the other subscriptions off the page.
     property string expandedId: ""
     property bool xray: false
+    property bool setupOpen: false
+    function openSetup() {
+        setupOpen = true;
+        if (hostWidget) hostWidget.usageSource.setupAction("initialize");
+    }
+    Connections {
+        target: root.hostWidget ? root.hostWidget.usageSource : null
+        function onSetupFinished() { root.setupOpen = false; root.xray = true; }
+        function onSetupLoadedChanged() {
+            if (root.opened && !root.setupOpen && root.hostWidget.usageSource.setupLoaded
+                    && !root.hostWidget.usageSource.setupState.completed) root.openSetup();
+        }
+    }
 
     // ---------------------------------------------------------------- companions
     //
@@ -135,6 +148,8 @@ Ui.Panel {
     onOpenedChanged: if (opened) {
         if (root.hostWidget) root.hostWidget.touch();
         if (root.stale) root.refresh();
+        if (root.hostWidget && root.hostWidget.usageSource.setupLoaded
+                && !root.hostWidget.usageSource.setupState.completed) root.openSetup();
         Qt.callLater(function() { catcher.forceActiveFocus() });
     }
 
@@ -148,8 +163,8 @@ Ui.Panel {
         // Wide enough for three window chips and a chevron on one line; tall enough that all five
         // subscriptions are on screen at once with no scrolling (the cap only bites once a row is
         // expanded, and then the expansion is what scrolls).
-        contentWidth: panel.fittedContentWidth(Style.space(root.xray ? 940 : 430))
-        contentHeight: panel.fittedContentHeight(root.xray ? Style.space(720) : body.implicitHeight, Style.space(780))
+        contentWidth: panel.fittedContentWidth(Style.space(root.setupOpen ? 760 : (root.xray ? 940 : 430)))
+        contentHeight: panel.fittedContentHeight((root.setupOpen || root.xray) ? Style.space(720) : body.implicitHeight, Style.space(780))
 
         Ui.PanelKeyCatcher {
             id: catcher
@@ -165,11 +180,26 @@ Ui.Panel {
             onActivateRequested: root.toggleCurrent()
             onTabRequested: function(direction) { root.switchPanel(direction) }
 
-            XrayView {
+            SetupView {
                 anchors.fill: parent
-                visible: root.xray
+                visible: root.setupOpen
+                providers: root.providers
+                setupState: root.hostWidget ? root.hostWidget.usageSource.setupState : ({})
+                busy: root.hostWidget ? root.hostWidget.usageSource.setupBusy : false
+                errorText: root.hostWidget ? root.hostWidget.usageSource.setupError : ""
+                statusText: root.hostWidget ? root.hostWidget.usageSource.setupStatus : ""
+                onActionRequested: function(action) { if (root.hostWidget) root.hostWidget.usageSource.setupAction(action) }
+                onRefreshRequested: { root.refresh(); if (root.hostWidget) root.hostWidget.usageSource.setupAction("status"); }
+                onProviderRequested: function(provider) { root.setupOpen = false; root.xray = true; xrayView.selectedId = provider; }
+                onCloseRequested: root.setupOpen = false
+            }
+            XrayView {
+                id: xrayView
+                anchors.fill: parent
+                visible: root.xray && !root.setupOpen
                 providers: root.providers
                 onBackRequested: root.xray = false
+                onSetupRequested: root.openSetup()
                 priceStatus: root.hostWidget ? root.hostWidget.usageSource.priceStatus : ""
                 priceError: root.hostWidget ? root.hostWidget.usageSource.priceError : ""
                 savingPrice: root.hostWidget ? root.hostWidget.usageSource.savingPrice : false
@@ -188,7 +218,7 @@ Ui.Panel {
                 }
             }
             ScrollView {
-                visible: !root.xray
+                visible: !root.xray && !root.setupOpen
                 id: scroll
                 anchors.fill: parent
                 clip: true
@@ -243,6 +273,23 @@ Ui.Panel {
                             font.pixelSize: Style.font.bodySmall
                         }
                         MouseArea { anchors.fill: parent; onClicked: root.xray = true; cursorShape: Qt.PointingHandCursor }
+                    }
+                    Rectangle {
+                        width: parent.width
+                        height: Style.space(34)
+                        color: "transparent"
+                        border.color: Color.muted
+                        Text {
+                            anchors.centerIn: parent
+                            textFormat: Text.PlainText
+                            text: root.hostWidget && root.hostWidget.usageSource.setupState.completed
+                                ? "Setup · providers and optional tracking"
+                                : "Set up AI Usage · start here"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: root.openSetup(); cursorShape: Qt.PointingHandCursor }
                     }
                     // ---- the whole machine in one line, when any provider has history ------
                     Text {

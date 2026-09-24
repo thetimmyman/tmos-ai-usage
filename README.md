@@ -1,11 +1,14 @@
 # TMOS AI Usage
 
-Every AI subscription and API plan on your machine, in one Omarchy bar panel.
+AI subscription budgets, usage and comparisons in one Omarchy bar panel.
 
 Rate-limit windows with reset times, prepaid balances, and local token history by day and by
 model — for Claude Code, Codex, ClinePass, Command Code, OpenCode and anything else you have
-configured. **All subscriptions are on the first page**, in the same order, so you can compare them
-down the page; clicking a row opens its depth underneath without hiding the others.
+configured through a supported reader. The budget dropdown and native Inference X-RAY overview
+share the same ranking; clicking a budget row expands its details.
+
+**New installation? Start with [Getting started](GETTING-STARTED.md).** The native **Setup**
+guide explains what is automatic and offers optional task capture and Pi observation.
 
 ![TMOS AI Usage](preview.png)
 
@@ -66,6 +69,19 @@ On install the collector starts within a few seconds and runs every five minutes
 cache is `~/.local/state/tmos-ai-usage/usage.json`; the panel reads that file and never makes a
 network request of its own. `TMOS_USAGE_STATE_DIR` moves both halves if you want the state
 elsewhere.
+
+Open the budget dropdown: the first visit opens the setup guide and initializes
+private local folders. You can reopen it with **Set up AI Usage · start here**,
+or **Setup · providers and optional tracking** after finishing. The X-RAY header
+also has **Setup**. Sign into any desired provider with its own CLI, then choose
+**Refresh now**. Setup reuses supported existing credentials read-only; it does not
+install provider CLIs or sign into accounts.
+
+In each X-RAY provider tab, confirm **Subscription price** with your actual amount
+and billing cycle. Optional Setup actions install the `tmos-ai-task` command and
+Pi observer by linking their bundled files; they refuse unrelated existing files.
+Neither is required for automatic quota and supported local-history collection.
+See [Getting started](GETTING-STARTED.md) for imports, ranking labels and next steps.
 
 ## Configure
 
@@ -156,7 +172,7 @@ python3 collector/usage_collector.py --list-providers   # every provider, and wh
 python3 collector/usage_collector.py --probe acme       # read that one now, and say what it saw
 ```
 
-`--probe` prints the credential it will use, whether that credential is readable, the endpoint it
+`--probe` prints the credential source (never its secret), whether that source is readable, the endpoint it
 will `GET`, and then the actual reading — or the reason there is none. It exits `0` when the
 provider resolved (a provider in an error state *is* the answer) and `2` for an id that does not
 exist. Neither command needs a release, and `--list-providers` never touches the network.
@@ -258,15 +274,25 @@ private invoice history and explicit task-outcome capture are documented below.
 
 - `python3` (standard library only — no pip packages) for the collector.
 - `quickshell` / Omarchy Quattro, which provides the plugin runtime.
+- Optional task capture uses Bash and GNU `readlink` (coreutils), normally included with Omarchy.
+- Optional Pi observation requires an already installed Pi 0.87+; Setup installs only the observer.
+- Node.js is used by the developer test suite; the core collector has no Node dependency.
 
 ## Remove
+
+Before removing the plugin, open **Setup** and choose **Disable** for any optional
+task command or Pi observer installed through Setup. This removes only symlinks
+managed by this installation; unrelated files and manually copied extensions stay
+unchanged. Reload Pi or start a new session after disabling its observer.
 
 ```sh
 omarchy plugin remove tmos.usage
 ```
 
-The collector's cache lives in `~/.local/state/`; remove that directory if you want the state gone
-too.
+Keep `~/.local/state/tmos-ai-usage/` to retain invoices, imported history and task
+evidence. Delete only that plugin-specific directory if you explicitly want to
+erase its data, or the custom directory you selected with `TMOS_USAGE_STATE_DIR`.
+Do not delete the shared `~/.local/state/` directory.
 
 ## Roadmap
 
@@ -300,8 +326,8 @@ See [ECONOMICS.md](ECONOMICS.md) for setup, supported sources, task capture,
 invoice imports, comparison publication, and trust boundaries. This remains the
 same `tmos.usage` plugin and public repository; this will be its first Omarchy
 marketplace listing. Do not create a duplicate plugin identity or source repository.
-The overview places per-subscription report, outcome and billing coverage ahead of
-the ranking rows. Import diagnostics show counts only; source filenames, receipt
+The overview shows the shared ranking first, followed by per-subscription report,
+outcome and billing coverage. Import diagnostics show counts only; source filenames, receipt
 references and credentials stay out of the view.
 
 See [PROVIDER-COVERAGE.md](PROVIDER-COVERAGE.md) for documented API versus
@@ -309,7 +335,7 @@ subscription-report boundaries and current history coverage limits.
 
 Run `bash scripts/check.sh` before release. This covers offline/degraded collection,
 accounting and evidence regressions, shared ordering, native QML runtime and the
-Omarchy manifest. Version 0.3.0 is merged and the initial marketplace listing is
+Omarchy manifest. Version 0.3.1 adds native first-run setup. The initial marketplace listing is
 [submitted for review](https://github.com/omacom/omarchy-plugin-marketplace/issues/8574).
 Marketplace approval is separate from the tested source release. For later listing
 updates, use the [plugin verification/update form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)

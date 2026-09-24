@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 · 2026-09-24
+
+- Add a native first-run setup guide with provider readiness, price confirmation, and report-inbox instructions.
+- Initialize private state automatically when setup opens; preserve existing billing, credentials, and usage history.
+- Add explicit enable/disable controls for the task command and Pi observer, with conflict-safe managed links.
+- Keep optional tracking opt-in and explain the manual evidence required for validated-task value.
+- Test first-run persistence, initialization races, managed-link installation/removal, and clean-home behavior.
+
 ## 0.3.0 · 2026-09-24
 
 Source released; marketplace listing submitted for maintainer review.
