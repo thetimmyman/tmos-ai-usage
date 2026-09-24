@@ -277,3 +277,32 @@ too.
 ## License
 
 MIT — see `LICENSE`.
+
+## Inference economics: request-log import (PS-679 preview)
+
+An offline importer is available for OpenCode's `request-logs-*.json` exports:
+
+```sh
+python3 collector/request_log_import.py ~/Downloads/request-logs-2026-09-24.json \
+  --ledger ~/.local/state/tmos-ai-usage/opencode-requests.json
+```
+
+It writes a private, locked, atomically replaced ledger and prints a summary. Re-importing
+overlapping files is safe: identity uses the provider's log-row `id`, because `requestID`
+can repeat across distinct inference calls. Conflicting observations fail for reconciliation.
+Headers, location, API-key identifiers and arbitrary metadata are discarded; workspace,
+session and correlation identifiers are hashed. Keep the source export outside the repository.
+
+The summary distinguishes final request success from failed upstream attempts, keeps token
+categories separate, reports latency percentiles and preserves truncated-export coverage.
+Missing cost and task outcomes remain null. The JSON's bare `cost` has no declared unit,
+so it is not labeled USD or subscription cash spent. Task verification and rework require
+dispatch/attempt evidence joins; a successful HTTP response does not establish a completed task.
+
+This importer is an initial development slice, not yet connected to the QML panel or timer.
+The documented [OpenCode Usage API](https://opencode.ai/v2/docs/console/usage/) offers a
+separate CSV export using a service-account key and explicit charge units; it is not this JSON
+schema. A service-account key is required for that future automatic collector. The existing Go
+allowance credential is not assumed to grant report access.
+
+Run importer checks: `python3 -m unittest discover -s collector -p 'test_request_log_import.py'`.
