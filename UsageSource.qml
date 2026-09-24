@@ -1,20 +1,5 @@
-// shell/plugins/tmos.usage/UsageSource.qml — the plugin's read side.
-//
-// NOT an entry point (manifest.json declares only barWidget): it is a local component BarWidget.qml
-// instantiates, the same shape ardfard/omarchy-opencode-usage uses for its Service.qml.
-//
-// Two jobs, both narrow:
-//   1. Watch ~/.local/state/tmos/usage.json (the tmosd state-path contract) with a FileView and
-//      re-parse it whenever it changes. The collector writes atomically (os.replace), so a reload
-//      never observes half a document.
-//   2. On an explicit refresh, run the collector once as a subprocess. That is the ONLY way a
-//      number changes from inside the shell: this plugin performs no network I/O of its own, holds
-//      no credential, and knows no endpoint — constitution.md's separation of an observer from a
-//      display, and the reason the widget stays installable without secrets.
-//
-// Collector path contract (same as tmosd's, see ../../tmosd/ipc-contract.md): third-party plugins
-// never see `__sourceDir`, so the installed copy lives at ~/.config/tmos/usage_collector.py, with
-// $TMOS_USAGE_COLLECTOR as the override for a checkout.
+// Reads the private usage cache and invokes bundled helpers with explicit argv.
+// Credentials remain in the collector; setup and review are local user actions.
 import QtQuick
 import Quickshell
 import Quickshell.Io as QSIo
@@ -35,6 +20,56 @@ Item {
         var override = Quickshell.env("TMOS_USAGE_COLLECTOR");
         if (override && override.length > 0) return override;
         return Qt.resolvedUrl("collector/usage_collector.py").toString().replace(/^file:\/\//, "");
+    }
+
+    property var setupState: ({})
+    property bool setupBusy: false
+    property bool setupLoaded: false
+    property string setupError: ""
+    property string setupStatus: ""
+    property string setupRequest: ""
+    property bool setupInitializeQueued: false
+    signal setupFinished()
+    Component.onCompleted: setupAction("status")
+
+    function setupAction(action) {
+        if (["status", "initialize", "install-task-command", "install-pi-observer", "remove-task-command", "remove-pi-observer", "finish"].indexOf(action) < 0) return false;
+        if (root.setupBusy) {
+            if (action === "initialize") root.setupInitializeQueued = true;
+            return false;
+        }
+        setupError = "";
+        setupStatus = "";
+        setupRequest = action;
+        root.setupBusy = true;
+        setupProcess.command = ["python3", Qt.resolvedUrl("collector/setup.py").toString().replace(/^file:\/\//, ""),
+            action, "--state-dir", root.stateDir];
+        setupProcess.running = true;
+        return true;
+    }
+    QSIo.Process {
+        id: setupProcess
+        stdout: QSIo.StdioCollector { id: setupOutput; waitForEnd: true }
+        onExited: function(code) {
+            var completedAction = root.setupRequest;
+            root.setupBusy = false;
+            var response = null;
+            try { response = JSON.parse(String(setupOutput.text || "")); } catch (e) {}
+            if (code !== 0 || !response || response.error) {
+                root.setupError = response && response.error ? String(response.error).slice(0, 240) : "Setup could not finish. Check Python 3 is installed and retry.";
+                root.setupLoaded = true;
+                return;
+            }
+            root.setupState = response;
+            root.setupStatus = String(response.message || "");
+            root.setupLoaded = true;
+            if (completedAction === "initialize") root.refresh();
+            if (completedAction === "finish") root.setupFinished();
+            if (root.setupInitializeQueued) {
+                root.setupInitializeQueued = false;
+                Qt.callLater(function() { root.setupAction("initialize"); });
+            }
+        }
     }
 
     property string rankingMode: ""

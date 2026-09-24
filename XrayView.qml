@@ -13,6 +13,7 @@ Rectangle {
     property double nowMs: Date.now()
     Timer { interval: 30000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
     signal backRequested()
+    signal setupRequested()
     signal modeSelected(string mode)
     signal priceSaved(string provider, string amount, string cycle)
     signal taskReviewsRequested()
@@ -149,6 +150,7 @@ Rectangle {
             Row {
                 spacing: Style.space(16)
                 Action { title: "‹ Budget"; onActivated: root.backRequested() }
+                Action { title: "Setup"; onActivated: root.setupRequested() }
                 Label { text: "INFERENCE X-RAY"; font.pixelSize: Style.font.subtitle; font.bold: true; color: Color.accent }
             }
             Flow {

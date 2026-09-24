@@ -8,14 +8,22 @@ never grant validation or ranking credit.
 
 ## Installation
 
-Requires Pi 0.87+ and Python 3 (standard library only). Install this entire directory
-as `~/.pi/agent/extensions/tmos-ai-usage/`, including `index.js`, `observer.js`,
+Requires an already installed Pi 0.87+ and Python 3 (standard library only).
+In the plugin budget dropdown or X-RAY header, open **Setup** and choose
+**Enable** beside **Pi observer**. By default it creates a symlink from
+`~/.pi/agent/extensions/tmos-ai-usage/` to this bundled directory and refuses an
+unrelated existing destination. It installs the observer, not Pi or provider CLIs,
+and does not sign into any account. See [Getting started](../../GETTING-STARTED.md).
+
+For manual installation, install this entire directory as
+`~/.pi/agent/extensions/tmos-ai-usage/`, including `index.js`, `observer.js`,
 `write_event.py` and `package.json`. Pi discovers user extension directories and the
 manifest explicitly names `index.js`. Start a new Pi session, or `/reload` in a
 running session. Existing processes do not load newly installed extensions until
 reload. This installation does not edit CLI shims or provider settings.
 
-For isolated workers using `PI_CODING_AGENT_DIR`, install under that agent directory's
+Setup honors an absolute `PI_CODING_AGENT_DIR` inherited by the shell.
+For other isolated workers using `PI_CODING_AGENT_DIR`, install under that agent directory's
 `extensions/`, or add `--extension /absolute/path/to/integration/pi/index.js` to the
 existing Pi invocation. The default user extension does not automatically cover a
 separate isolated agent directory. No historical session content is imported on
@@ -45,6 +53,15 @@ deduplicated generic error observations go into private
 `*.jsonl.assistant-errors.json` sidecars labelled
 `pi_assistant_errors_not_verified_upstream`. Those sidecars are not currently
 published as upstream errors or used for provider value rankings.
+
+## Disable the observer
+
+Open the plugin's **Setup** and choose **Disable** beside **Pi observer** before
+removing the plugin. This removes only the symlink managed by this installation;
+a pre-existing copied extension or unrelated destination is left unchanged.
+Remove a manual copy through your own installation process. Start a new Pi
+session or `/reload` to unload the observer. Existing outcome history remains in
+the plugin state directory; disabling observation does not erase it.
 
 ## Failure and resource behavior
 
