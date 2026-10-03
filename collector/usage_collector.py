@@ -113,6 +113,8 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import http_guard
+
 SCHEMA_VERSION = 3
 TIMEOUT_S = 8.0
 USER_AGENT = "tmos-usage-collector/0.1 (+shell/plugins/tmos.usage)"
@@ -294,9 +296,10 @@ def unknown(
     return record(provider, status=status, source=source, note=str(reason))
 
 
-# One opener for the whole process. `build_opener()` installs the default handlers — redirects
-# included — so this behaves exactly as `urlopen` does, with a single audited call site.
-_OPENER = urllib.request.build_opener()
+# Every provider read carries a credential, so it goes through `http_guard`: redirects are refused
+# (never followed, so `Authorization` cannot be re-sent to another host) and the body is bounded
+# while it is read. Usage documents are a few KB; a Cline ledger page of 100 charges is far below 2 MiB.
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 def http_json(
@@ -310,7 +313,9 @@ def http_json(
 
     Only http(s) is opened. Every base URL here can be overridden by an environment variable
     (the gates point them at a dead local port), so the scheme is checked before anything is
-    opened: a `file:` base must never turn a usage read into a local file read.
+    opened: a `file:` base must never turn a usage read into a local file read. A redirect is
+    refused (it raises `HTTPError` with its 3xx code) and a body over MAX_RESPONSE_BYTES raises
+    before it is parsed; neither error carries the token, the `Location`, or body text.
     """
     scheme = urllib.parse.urlsplit(url).scheme.lower()
     if scheme not in ("http", "https"):
@@ -325,11 +330,9 @@ def http_json(
     if token:
         hdrs["Authorization"] = "Bearer " + token
     hdrs.update(headers or {})
-    req = urllib.request.Request(url, headers=hdrs, method="GET")  # nosec B310 - scheme checked above
-    with _OPENER.open(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8")
+    raw = http_guard.read_bounded(url, hdrs, timeout=timeout, limit=MAX_RESPONSE_BYTES)
     try:
-        return json.loads(body)
+        return json.loads(raw.decode("utf-8"))
     except ValueError as exc:
         raise ValueError(f"response was not JSON: {exc}") from exc
 

@@ -6,8 +6,8 @@ import hashlib
 import io
 import os
 from pathlib import Path
-import urllib.request
 from billing_ledger import timestamp
+import http_guard
 from subscription_value import atomic_json
 
 URL='https://opencode.ai/console/api/v1/usage/export?scope=organization&range=30d'
@@ -52,8 +52,8 @@ def fetch(directory):
     # Explicitly opt-in. Never reuse a personal Go/Zen key or a browser session token.
     key=os.environ.get('OPENCODE_CONSOLE_SERVICE_KEY')
     if not key:return None
-    req=urllib.request.Request(URL,headers={'Authorization':'Bearer '+key,'Accept':'text/csv','User-Agent':'TMOS-AI-Usage/0.3'})
-    with urllib.request.urlopen(req,timeout=15) as response:raw=response.read(MAX_BYTES+1)
+    # Bearer-authenticated, so it never follows a redirect; the size bound is enforced while reading.
+    raw=http_guard.read_bounded(URL,{'Authorization':'Bearer '+key,'Accept':'text/csv','User-Agent':'TMOS-AI-Usage/0.3'},timeout=15,limit=MAX_BYTES)
     report=parse(raw)
     # Use the retrieval instant for snapshot ordering alongside manual exports.
     # Without this, an older CSV could overwrite a freshly fetched API report.
