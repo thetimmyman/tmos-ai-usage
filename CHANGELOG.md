@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Gate Claude Code's quota endpoint: honour `Retry-After` on a 429, never send an expired or already-rejected token, and reuse a reading taken within the last 10 minutes, so five-minute polling no longer keeps the account rate-limited.
+- Serve the last Claude quota reading as **stale** while the endpoint is gated, dropping any window that has reset since; say when the token needs `claude` to refresh it.
 - Never follow HTTP redirects on credential-bearing provider and console-export requests, so `Authorization` and provider headers cannot be re-sent to another host; a redirect is reported as "HTTP 30x".
 - Bound provider responses while reading (2 MiB per usage document, 20 MiB for the console CSV), independent of `Content-Length`, with a whole-body deadline alongside the socket timeout.
 

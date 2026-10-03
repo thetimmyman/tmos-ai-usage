@@ -34,12 +34,13 @@ var PROVIDER_LABEL = {
 }
 
 // Status badges. "estimate" is not a failure — it is a number TMOS derived rather than read, and
-// it is labelled so nobody mistakes it for the provider's own meter.
+// it is labelled so nobody mistakes it for the provider's own meter. "stale" is the provider's own
+// meter from an earlier read, served while the endpoint is rate-limited or the token needs a refresh.
 var STATUS_LABEL = {
-  ok: "", estimate: "estimate", unauthenticated: "sign in", unknown: "unknown", error: "error"
+  ok: "", estimate: "estimate", stale: "stale", unauthenticated: "sign in", unknown: "unknown", error: "error"
 }
 var STATUS_TONE = {
-  ok: "ok", estimate: "warn", unauthenticated: "muted", unknown: "muted", error: "urgent"
+  ok: "ok", estimate: "warn", stale: "warn", unauthenticated: "muted", unknown: "muted", error: "urgent"
 }
 
 // Local weekday names, for the day rows. Index matches Date.getDay().
