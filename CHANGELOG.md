@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 · 2026-10-03
 
 - Gate Claude Code's quota endpoint: honour `Retry-After` on a 429, never send an expired or already-rejected token, and reuse a reading taken within the last 10 minutes, so five-minute polling no longer keeps the account rate-limited.
 - Serve the last Claude quota reading as **stale** while the endpoint is gated, dropping any window that has reset since; say when the token needs `claude` to refresh it.

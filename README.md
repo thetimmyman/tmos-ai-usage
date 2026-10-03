@@ -335,7 +335,7 @@ subscription-report boundaries and current history coverage limits.
 
 Run `bash scripts/check.sh` before release. This covers offline/degraded collection,
 accounting and evidence regressions, shared ordering, native QML runtime and the
-Omarchy manifest. Version 0.3.1 adds native first-run setup. The initial marketplace listing is
+Omarchy manifest. Version 0.3.2 refuses redirects and bounds response size on credentialed provider reads, and gates Claude's quota endpoint. The initial marketplace listing is
 [submitted for review](https://github.com/omacom/omarchy-plugin-marketplace/issues/8574).
 Marketplace approval is separate from the tested source release. For later listing
 updates, use the [plugin verification/update form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
