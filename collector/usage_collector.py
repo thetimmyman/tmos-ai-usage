@@ -101,6 +101,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -2559,8 +2560,116 @@ def _claude_local_entries(now: datetime) -> list:
     return entries
 
 
-def collect_claude_code() -> dict:
-    creds = read_json(Path(os.path.expanduser("~/.claude/.credentials.json")))
+# Claude's /api/oauth/usage rate-limits hard (a 429 carries a Retry-After near an hour) and the
+# shell polls every five minutes, so an ungated collector never climbs back out of the penalty
+# box. The gate keeps the last good reading and when the endpoint may next be asked, and a closed
+# gate serves that reading as "stale" instead of calling again.
+CLAUDE_MIN_CALL_INTERVAL_S = 600
+CLAUDE_DEFAULT_BACKOFF_S = 900
+CLAUDE_MAX_BACKOFF_S = 6 * 3600
+_CLAUDE_TIERS = ("default_claude_max_20x", "default_claude_max_5x")
+
+
+def _claude_gate_path(state_dir: Path | None = None) -> Path:
+    return (state_dir or STATE_DIR) / "claude-usage-gate.json"
+
+
+def _load_claude_gate(state_dir: Path | None = None) -> dict:
+    raw = read_json(_claude_gate_path(state_dir))
+    return raw if isinstance(raw, dict) else {}
+
+
+def _save_claude_gate(gate: dict, state_dir: Path | None = None) -> None:
+    try:
+        path = _claude_gate_path(state_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(gate) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # an unwritable gate only costs an extra call next run
+
+
+def _token_fingerprint(token: str) -> str:
+    """Enough to notice the CLI replaced a rejected token; never enough to recover it."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _retry_after_s(headers: object, now: datetime) -> int:
+    """Retry-After as delta-seconds or an HTTP date, clamped; a default when absent or garbled."""
+    value = headers.get("Retry-After") if headers is not None else None
+    seconds: float | None = None
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.isdigit():
+            seconds = float(text)
+        else:
+            try:
+                from email.utils import parsedate_to_datetime
+
+                seconds = (parsedate_to_datetime(text) - now).total_seconds()
+            except (TypeError, ValueError, IndexError):
+                seconds = None
+    if seconds is None:
+        seconds = CLAUDE_DEFAULT_BACKOFF_S
+    return _int(max(60.0, min(float(CLAUDE_MAX_BACKOFF_S), seconds)))
+
+
+def _claude_stale_reading(gate: dict, reason: str, now: datetime) -> dict | None:
+    """The last good meter, minus any window that has reset since — its old figure would lie."""
+    last = gate.get("last_ok")
+    if not isinstance(last, dict):
+        return None
+    rows = []
+    for row in last.get("windows") or []:
+        if not isinstance(row, dict):
+            continue
+        resets_at = _parse_iso(row.get("resets_at"))
+        used = _num(row.get("used_pct"))
+        if used is None or resets_at is None or resets_at <= now:
+            continue
+        rows.append(window(str(row.get("name")), used, resets_at, now))
+    observed = _parse_iso(last.get("observed_at"))
+    if not rows or observed is None:
+        return None
+    age_min = max(0, _int((now - observed).total_seconds() // 60))
+    out = record(
+        "claude-code",
+        status="stale",
+        plan=last.get("plan"),
+        windows=rows,
+        note=f"{reason}; showing the meter as read {age_min} min ago",
+        observed_at=now,
+    )
+    out["read_at"] = _iso(observed)
+    return out
+
+
+def _claude_fallback(
+    gate: dict, reason: str, plan: str | None, now: datetime
+) -> dict:
+    out = _claude_stale_reading(gate, reason, now)
+    if out is None:
+        out = parse_claude_local(_claude_local_entries(now), now)
+        activity = out["note"].removeprefix("usage endpoint unreachable; ")
+        out["note"] = _scrub(f"{reason}; {activity}")
+    out["plan"] = out.get("plan") or plan
+    return out
+
+
+def collect_claude_code(
+    now: datetime | None = None,
+    *,
+    state_dir: Path | None = None,
+    creds_path: Path | None = None,
+    fetch=None,
+) -> dict:
+    now = now or _now()
+    fetch = fetch or http_json
+    creds = read_json(
+        creds_path or Path(os.path.expanduser("~/.claude/.credentials.json"))
+    )
     oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
     token = oauth.get("accessToken") if isinstance(oauth, dict) else None
     plan = oauth.get("subscriptionType") if isinstance(oauth, dict) else None
@@ -2571,25 +2680,99 @@ def collect_claude_code() -> dict:
             "run `claude` and sign in",
             status="unauthenticated",
         )
+    tier = oauth.get("rateLimitTier")
+    tier = tier if tier in _CLAUDE_TIERS else None
+
+    def finish(out: dict) -> dict:
+        out["plan_tier"] = tier
+        return out
+
+    gate = _load_claude_gate(state_dir)
+    fingerprint = _token_fingerprint(token)
+
+    # Reasons not to call at all. Each is cheaper than a request the endpoint will refuse, and
+    # a refused request can extend the rate-limit penalty.
+    expires_at = _from_epoch(oauth.get("expiresAt"), "ms")
+    if expires_at is not None and expires_at <= now:
+        return finish(
+            _claude_fallback(
+                gate,
+                f"Claude Code token expired {_iso(expires_at)}; run `claude` once to refresh it",
+                plan,
+                now,
+            )
+        )
+    if gate.get("rejected_token") == fingerprint:
+        return finish(
+            _claude_fallback(
+                gate,
+                "Claude Code token was rejected; run `claude` and sign in again",
+                plan,
+                now,
+            )
+        )
+    not_before = _parse_iso(gate.get("not_before"))
+    if not_before is not None and now < not_before:
+        return finish(
+            _claude_fallback(
+                gate,
+                f"usage endpoint rate-limited until {_iso(not_before)}",
+                plan,
+                now,
+            )
+        )
+    last_call = _parse_iso(gate.get("last_call_at"))
+    if (
+        last_call is not None
+        and (now - last_call).total_seconds() < CLAUDE_MIN_CALL_INTERVAL_S
+        and isinstance(gate.get("last_ok"), dict)
+    ):
+        cached = _claude_stale_reading(gate, "reused within the call interval", now)
+        if cached is not None:
+            cached["status"] = "ok"
+            cached["note"] = ""
+            cached["observed_at"] = cached.pop("read_at")
+            return finish(cached)
+
     base = os.environ.get("CLAUDE_API_BASE", "https://api.anthropic.com")
+    gate["last_call_at"] = _iso(now)
     try:
-        payload = http_json(
+        payload = fetch(
             base + "/api/oauth/usage",
             token,
             headers={"anthropic-beta": "oauth-2025-04-20"},
         )
-    except (
-        Exception
-    ) as exc:  # endpoint refused/expired token -> local estimate, never a crash
-        now = _now()
-        out = parse_claude_local(_claude_local_entries(now), now)
-        out["plan"] = plan
-        out['plan_tier'] = oauth.get('rateLimitTier') if oauth.get('rateLimitTier') in ('default_claude_max_20x', 'default_claude_max_5x') else None
-        out["note"] = _scrub(f"{type(exc).__name__}: {out['note']}")
-        return out
-    out = parse_claude_code(payload, plan=plan)
-    out['plan_tier'] = oauth.get('rateLimitTier') if oauth.get('rateLimitTier') in ('default_claude_max_20x', 'default_claude_max_5x') else None
-    return out
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            wait = _retry_after_s(exc.headers, now)
+            gate["not_before"] = _iso(now + timedelta(seconds=wait))
+            reason = f"usage endpoint rate-limited (429) until {gate['not_before']}"
+        elif exc.code in (401, 403):
+            gate["rejected_token"] = fingerprint
+            reason = f"Claude Code token rejected ({exc.code}); run `claude` and sign in again"
+        else:
+            reason = f"usage endpoint returned HTTP {exc.code}"
+        _save_claude_gate(gate, state_dir)
+        return finish(_claude_fallback(gate, reason, plan, now))
+    except Exception as exc:  # unreachable/garbled -> last reading or local estimate, never a crash
+        _save_claude_gate(gate, state_dir)
+        return finish(
+            _claude_fallback(gate, f"usage endpoint unreachable ({type(exc).__name__})", plan, now)
+        )
+    out = parse_claude_code(payload, plan=plan, now=now)
+    gate.pop("not_before", None)
+    gate.pop("rejected_token", None)
+    if out.get("status") == "ok":
+        gate["last_ok"] = {
+            "observed_at": out["observed_at"],
+            "plan": plan,
+            "windows": [
+                {"name": w["name"], "used_pct": w["used_pct"], "resets_at": w["resets_at"]}
+                for w in out["windows"]
+            ],
+        }
+    _save_claude_gate(gate, state_dir)
+    return finish(out)
 
 
 def collect_codex() -> dict:
@@ -2893,6 +3076,122 @@ def _selftest() -> int:
         cd["windows"][0]["resets_in_s"] == 9000,
         str(cd),
     )
+
+    # The rate-limit gate: a fake fetch, a scratch state dir and a scratch credentials file, so
+    # none of this reads the real ~/.claude or touches the network.
+    import email.message
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        gate_dir = Path(scratch)
+        creds_file = gate_dir / "credentials.json"
+        calls: list[str] = []
+        good = fx("claude-code-usage.json")
+
+        def write_creds(token: str, expires: datetime) -> None:
+            creds_file.write_text(
+                json.dumps(
+                    {
+                        "claudeAiOauth": {
+                            "accessToken": token,
+                            "expiresAt": int(expires.timestamp() * 1000),
+                            "subscriptionType": "max",
+                            "rateLimitTier": "default_claude_max_20x",
+                        }
+                    }
+                )
+            )
+
+        def fetch_ok(url, token, headers=None):
+            calls.append("ok")
+            return good
+
+        def refuse(code: int, retry_after: str | None = None):
+            def fetch(url, token, headers=None):
+                calls.append(str(code))
+                hdrs = email.message.Message()
+                if retry_after is not None:
+                    hdrs["Retry-After"] = retry_after
+                raise urllib.error.HTTPError(url, code, "refused", hdrs, None)
+
+            return fetch
+
+        def run(at: datetime, fetch) -> dict:
+            return collect_claude_code(
+                at, state_dir=gate_dir, creds_path=creds_file, fetch=fetch
+            )
+
+        write_creds("token-one", now + timedelta(hours=8))
+        first = run(now, fetch_ok)
+        check(
+            "claude gate: a good read is ok and remembered",
+            first["status"] == "ok"
+            and len(first["windows"]) == 2
+            and isinstance(_load_claude_gate(gate_dir).get("last_ok"), dict),
+            str(first),
+        )
+        calls.clear()
+        again = run(now + timedelta(minutes=5), fetch_ok)
+        check(
+            "claude gate: a read inside the call interval is reused, not re-fetched",
+            calls == [] and again["status"] == "ok" and len(again["windows"]) == 2,
+            f"{calls} {again}",
+        )
+        limited_at = now + timedelta(minutes=11)
+        limited = run(limited_at, refuse(429, "3403"))
+        gate = _load_claude_gate(gate_dir)
+        check(
+            "claude gate: a 429 honours Retry-After and serves the last meter as stale",
+            limited["status"] == "stale"
+            and len(limited["windows"]) >= 1
+            and _parse_iso(gate.get("not_before"))
+            == limited_at + timedelta(seconds=3403),
+            f"{limited} {gate}",
+        )
+        calls.clear()
+        held = run(limited_at + timedelta(minutes=30), fetch_ok)
+        check(
+            "claude gate: no call while the rate-limit gate is closed",
+            calls == [] and held["status"] == "stale" and "rate-limited" in held["note"],
+            f"{calls} {held}",
+        )
+        past_reset = _claude_stale_reading(gate, "held", now + timedelta(hours=3))
+        check(
+            "claude gate: a window that has reset since is not served stale",
+            past_reset is not None
+            and [w["name"] for w in past_reset["windows"]] == ["week"],
+            str(past_reset),
+        )
+        calls.clear()
+        write_creds("token-one", now)
+        expired = run(now + timedelta(hours=2), fetch_ok)
+        check(
+            "claude gate: an expired token is never sent and says to run `claude`",
+            calls == [] and "expired" in expired["note"] and "`claude`" in expired["note"],
+            f"{calls} {expired}",
+        )
+        write_creds("token-one", now + timedelta(days=1))
+        after = now + timedelta(hours=2)
+        run(after, refuse(401))
+        calls.clear()
+        rejected = run(after + timedelta(minutes=20), fetch_ok)
+        check(
+            "claude gate: a rejected token is not retried until the CLI replaces it",
+            calls == [] and "rejected" in rejected["note"],
+            f"{calls} {rejected}",
+        )
+        write_creds("token-two", now + timedelta(days=1))
+        recovered = run(after + timedelta(minutes=40), fetch_ok)
+        check(
+            "claude gate: a new token reopens the gate",
+            calls == ["ok"] and recovered["status"] == "ok",
+            f"{calls} {recovered}",
+        )
+        check(
+            "claude gate: no token text reaches the gate file",
+            "token-one" not in _claude_gate_path(gate_dir).read_text()
+            and "token-two" not in _claude_gate_path(gate_dir).read_text(),
+        )
 
     cx = parse_codex(fx("codex-usage.json"), now)
     check(
