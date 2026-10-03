@@ -25,7 +25,7 @@ class ConsoleReportTest(unittest.TestCase):
     def test_api_snapshot_orders_against_manual_exports_without_retaining_key(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(c.os.environ, {'OPENCODE_CONSOLE_SERVICE_KEY':'test-secret'}):
-                with patch.object(c.urllib.request,'urlopen',return_value=io.BytesIO(self.blob([self.row()]))):
+                with patch.object(c.http_guard,'read_bounded',return_value=self.blob([self.row()])):
                     report=c.fetch(directory)
             self.assertEqual(report['source_modified_at'],c.timestamp(report['observed_at']).timestamp())
             stored=(Path(directory)/'console-summary.json').read_text()

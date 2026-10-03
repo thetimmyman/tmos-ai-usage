@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Never follow HTTP redirects on credential-bearing provider and console-export requests, so `Authorization` and provider headers cannot be re-sent to another host; a redirect is reported as "HTTP 30x".
+- Bound provider responses while reading (2 MiB per usage document, 20 MiB for the console CSV), independent of `Content-Length`, with a whole-body deadline alongside the socket timeout.
+
 ## 0.3.1 · 2026-09-24
 
 - Add a native first-run setup guide with provider readiness, price confirmation, and report-inbox instructions.
