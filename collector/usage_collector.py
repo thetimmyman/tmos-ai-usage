@@ -2705,6 +2705,12 @@ def collect_claude_code(
     account = (claude_config_path and _claude_account_id(claude_config_path)) or fingerprint
     if gate.get("account") != account:
         gate = {"account": account}
+    # The config and the credentials file are written separately, so for a moment the account id
+    # can name one account while the token still belongs to another. A meter is only served for
+    # the token that read it; backoff stays with the account.
+    last_ok = gate.get("last_ok")
+    if isinstance(last_ok, dict) and last_ok.get("token") != fingerprint:
+        gate.pop("last_ok", None)
 
     # Reasons not to call at all. Each is cheaper than a request the endpoint will refuse, and
     # a refused request can extend the rate-limit penalty.
@@ -2784,6 +2790,7 @@ def collect_claude_code(
     gate.pop("last_failed", None)
     if out.get("status") == "ok":
         gate["last_ok"] = {
+            "token": fingerprint,
             "observed_at": out["observed_at"],
             "plan": plan,
             "windows": [
@@ -3269,6 +3276,19 @@ def _selftest() -> int:
             "claude gate: another account is fetched, not served the old account's meter",
             calls == ["ok"] and switched["status"] == "ok",
             f"{calls} {switched}",
+        )
+        # A switch observed half-way: the new account id with the old account's token reads under
+        # that token, and the reading is not served once the new account's token arrives.
+        sign_in("synthetic-account-c")
+        write_creds("token-old-account", now + timedelta(days=1))
+        run_as(acct_at + timedelta(minutes=30), fetch_ok)
+        write_creds("token-new-account", now + timedelta(days=1))
+        calls.clear()
+        caught_up = run_as(acct_at + timedelta(minutes=31), fetch_ok)
+        check(
+            "claude gate: a reading is never reused for a token other than the one that read it",
+            calls == ["ok"] and caught_up["status"] == "ok",
+            f"{calls} {caught_up}",
         )
         check(
             "claude gate: no account id text reaches the gate file",

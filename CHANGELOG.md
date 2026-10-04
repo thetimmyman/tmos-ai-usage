@@ -4,7 +4,7 @@
 
 - Hold the whole-body read deadline during a blocking receive: each read gets only what is left of it, so a server that sends a byte and stalls can no longer stretch an 8 s read toward 16 s.
 - Keep a Claude quota reading **stale** after a failed refresh, including while the call interval throttles the next attempt; only a successful read marks it current again.
-- Bind the Claude quota gate (cached reading, backoff, rejected token) to the signed-in account, so switching accounts fetches the new account instead of showing the old one's meter.
+- Bind the Claude quota gate (cached reading, backoff, rejected token) to the signed-in account, so switching accounts fetches the new account instead of showing the old one's meter.; a cached meter is only reused for the token that read it.
 
 ## 0.3.2 · 2026-10-03
 
