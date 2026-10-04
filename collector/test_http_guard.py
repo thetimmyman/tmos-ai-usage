@@ -22,7 +22,7 @@ ACCOUNT = 'synthetic-account-id'
 
 
 class Origin:
-    """One loopback origin: routes map a path to (status, headers, body, delay_s, drip_s)."""
+    """One loopback origin: routes map a path to (status, headers, body, delay_s, drip_s, stall_s)."""
 
     def __init__(self):
         self.routes = {}
@@ -34,8 +34,8 @@ class Origin:
 
             def do_GET(self):
                 origin.seen.append({'path': self.path, 'headers': dict(self.headers)})
-                status, headers, body, delay, drip = origin.routes.get(
-                    self.path.split('?')[0], (404, {}, b'{}', 0, 0))
+                status, headers, body, delay, drip, stall = origin.routes.get(
+                    self.path.split('?')[0], (404, {}, b'{}', 0, 0, 0))
                 time.sleep(delay)
                 self.send_response(status)
                 for key, value in headers.items():
@@ -45,7 +45,15 @@ class Origin:
                     self.close_connection = True
                 self.end_headers()
                 try:
-                    if drip:
+                    if stall:  # a byte late in the deadline, then silence
+                        self.wfile.write(body[:1])
+                        self.wfile.flush()
+                        time.sleep(0.7)
+                        self.wfile.write(body[1:2])
+                        self.wfile.flush()
+                        time.sleep(stall)
+                        self.wfile.write(body[2:])
+                    elif drip:
                         for byte in body:
                             self.wfile.write(bytes([byte]))
                             self.wfile.flush()
@@ -62,12 +70,12 @@ class Origin:
         self.base = f'http://127.0.0.1:{self.server.server_address[1]}'
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def route(self, path, status=200, body=b'{}', headers=None, length=True, delay=0, drip=0):
+    def route(self, path, status=200, body=b'{}', headers=None, length=True, delay=0, drip=0, stall=0):
         headers = dict(headers or {})
         if length:
             headers.setdefault('Content-Length', str(len(body)))
         headers.setdefault('Content-Type', 'application/json')
-        self.routes[path] = (status, headers, body, delay, drip)
+        self.routes[path] = (status, headers, body, delay, drip, stall)
 
     def close(self):
         self.server.shutdown()
@@ -222,6 +230,15 @@ class GuardTest(unittest.TestCase):
         with self.assertRaises(OSError):
             self.read('/usage', timeout=0.3)
         self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_a_stall_after_the_first_bytes_ends_at_the_deadline(self):
+        # A byte lands 0.7 s into a 1 s deadline, then the server stalls: the next receive gets
+        # what is left of the deadline, not a fresh full socket timeout (which would end near 1.7 s).
+        self.a.route('/usage', body=self.padded(200), stall=3.0)
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            self.read('/usage', timeout=1.0)
+        self.assertLess(time.monotonic() - started, 1.5)
 
 
 class CollectorPathTest(unittest.TestCase):

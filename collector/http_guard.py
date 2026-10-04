@@ -38,11 +38,19 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(_RefuseRedirects)
 
 
+def _socket_of(resp):
+    """The socket under an http.client response, or None if this Python hides it."""
+    raw = getattr(getattr(resp, "fp", None), "raw", None)
+    sock = getattr(raw, "_sock", None)
+    return sock if hasattr(sock, "settimeout") else None
+
+
 def read_bounded(url: str, headers: dict, *, timeout: float, limit: int) -> bytes:
     """GET `url` and return at most `limit` bytes of body, or raise.
 
-    `timeout` bounds each socket operation and, separately, the whole body read, so a server that
-    trickles bytes cannot hold the collector past it.
+    `timeout` bounds connecting and the headers, and separately the whole body read: before each
+    receive the socket timeout is cut to what is left of the body deadline, so a server that
+    trickles bytes, or sends one and then stalls, cannot hold the collector past it.
     """
     req = urllib.request.Request(url, headers=headers, method="GET")  # nosec B310 - callers check scheme
     try:
@@ -56,14 +64,21 @@ def read_bounded(url: str, headers: dict, *, timeout: float, limit: int) -> byte
             raise ResponseTooLarge(f"response declared more than {limit} bytes; not read")
         deadline = time.monotonic() + timeout
         chunks, total = [], 0
+        sock = _socket_of(resp)
         while True:
-            chunk = resp.read1(min(CHUNK, limit + 1 - total))  # one receive: the deadline gets a look
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"response body not complete within {timeout:g}s")
+            if sock is not None and resp.fp is not None:  # fp is dropped once the body is done
+                sock.settimeout(remaining)
+            try:
+                chunk = resp.read1(min(CHUNK, limit + 1 - total))  # one receive: the deadline gets a look
+            except TimeoutError as exc:
+                raise TimeoutError(f"response body not complete within {timeout:g}s") from exc
             if not chunk:
                 break
             total += len(chunk)
             if total > limit:
                 raise ResponseTooLarge(f"response exceeded {limit} bytes; not parsed")
             chunks.append(chunk)
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"response body not complete within {timeout:g}s")
     return b"".join(chunks)
