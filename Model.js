@@ -433,15 +433,21 @@ function barTextFor(provider) {
   if (best === null) return `${provider.name} ${provider.statusLabel || "—"}`
   parts = []
   for (i = 0; i < WINDOW_ORDER.length; i++) parts.push(barWindowText(provider, WINDOW_ORDER[i]))
-  return `${provider.name} ${parts.join(" ")}`
+  return `${provider.name} ${parts.join(" ")}${staleSuffix(provider)}`
+}
+
+// A served-from-cache meter still has percentages; the marker keeps it from passing for live.
+function staleSuffix(provider) {
+  return provider && provider.status === "stale" ? ` · ${STATUS_LABEL.stale}` : ""
 }
 
 function barToneFor(provider, warnPct, lowPct) {
-  var best
+  var best, t
   if (!provider) return "muted"
   best = tightest([provider])
   if (best === null) return "muted"
-  return tone(best.remainingPct, warnPct, lowPct)
+  t = tone(best.remainingPct, warnPct, lowPct)
+  return provider.status === "stale" && t === "ok" ? STATUS_TONE.stale : t
 }
 
 function tone(remainingPct, warnPct, lowPct) {
@@ -504,7 +510,7 @@ function tooltip(providers, observedAtMs, nowMs) {
   for (i = 0; i < providers.length; i++) {
     p = providers[i]
     best = tightest([p])
-    line = `${p.name}: ${best ? `${Math.round(best.remainingPct)}% left (${best.window.label})` : (p.statusLabel || "—")}`
+    line = `${p.name}: ${best ? `${Math.round(best.remainingPct)}% left (${best.window.label})${staleSuffix(p)}` : (p.statusLabel || "—")}`
     if (p.stats && p.stats.available && p.stats.todayText) line += ` · ${p.stats.todayText}`
     parts.push(line)
   }

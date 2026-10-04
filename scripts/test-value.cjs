@@ -32,6 +32,14 @@ assert.equal(parsed.providers[0].valueLabel, '#1');
 const legacy = model.parseDocument(JSON.stringify({providers: [{provider: 'z'}, {provider: 'a'}]}));
 assert.deepEqual(Array.from(legacy.providers, r => r.id), ['a', 'z']);
 assert.equal(legacy.providers[0].valueLabel, 'Unranked');
+const meter = (status) => model.parseDocument(JSON.stringify({providers: [{provider: 'claude-code', status,
+  windows: [{name: '5h', used_pct: 20, remaining_pct: 80, resets_in_s: 3600}]}]})).providers[0];
+assert.match(model.barTextFor(meter('stale')), / · stale$/);
+assert.doesNotMatch(model.barTextFor(meter('ok')), /stale/);
+assert.equal(model.barToneFor(meter('stale'), 30, 10), 'warn');
+assert.equal(model.barToneFor(meter('ok'), 30, 10), 'ok');
+assert.match(model.tooltip([meter('stale')], Date.now(), Date.now()), /80% left \(5h\) · stale/);
+console.log('PASS stale meter: marked in bar text, tone and tooltip');
 console.log('PASS shared ranking: ordering, ties, free/unknown, coverage, period/cohort, legacy cache, Model integration');
 const activity = (id,n,price) => ({id,name:id,activity:{observed_turns:n,window_days:30,price:{monthly_usd:price}}});
 const ar = value.rankActivity([activity('slow',5,10),activity('fast',30,10),activity('free',2,0),activity('missing',3,undefined)]);
