@@ -2616,6 +2616,14 @@ def _retry_after_s(headers: object, now: datetime) -> int:
     return _int(max(60.0, min(float(CLAUDE_MAX_BACKOFF_S), seconds)))
 
 
+def _claude_account_id(config_path: Path) -> str | None:
+    """The signed-in account from Claude Code's config; tokens rotate, the account does not."""
+    config = read_json(config_path)
+    account = config.get("oauthAccount") if isinstance(config, dict) else None
+    uuid = account.get("accountUuid") if isinstance(account, dict) else None
+    return _token_fingerprint(uuid) if isinstance(uuid, str) and uuid else None
+
+
 def _claude_stale_reading(gate: dict, reason: str, now: datetime) -> dict | None:
     """The last good meter, minus any window that has reset since — its old figure would lie."""
     last = gate.get("last_ok")
@@ -2663,6 +2671,7 @@ def collect_claude_code(
     *,
     state_dir: Path | None = None,
     creds_path: Path | None = None,
+    claude_config_path: Path | None = None,
     fetch=None,
 ) -> dict:
     now = now or _now()
@@ -2689,6 +2698,13 @@ def collect_claude_code(
 
     gate = _load_claude_gate(state_dir)
     fingerprint = _token_fingerprint(token)
+    # Readings and backoff belong to one account. A different account's cached meter or penalty
+    # must not be served for this one, so a changed identity starts the gate over.
+    if claude_config_path is None and creds_path is None:
+        claude_config_path = Path(os.path.expanduser("~/.claude.json"))
+    account = (claude_config_path and _claude_account_id(claude_config_path)) or fingerprint
+    if gate.get("account") != account:
+        gate = {"account": account}
 
     # Reasons not to call at all. Each is cheaper than a request the endpoint will refuse, and
     # a refused request can extend the rate-limit penalty.
@@ -2725,8 +2741,10 @@ def collect_claude_code(
     if (
         last_call is not None
         and (now - last_call).total_seconds() < CLAUDE_MIN_CALL_INTERVAL_S
-        and isinstance(gate.get("last_ok"), dict)
     ):
+        # Throttled: no call. After a failed call the old meter is still stale, never current.
+        if gate.get("last_failed"):
+            return finish(_claude_fallback(gate, str(gate["last_failed"]), plan, now))
         cached = _claude_stale_reading(gate, "reused within the call interval", now)
         if cached is not None:
             cached["status"] = "ok"
@@ -2752,16 +2770,18 @@ def collect_claude_code(
             reason = f"Claude Code token rejected ({exc.code}); run `claude` and sign in again"
         else:
             reason = f"usage endpoint returned HTTP {exc.code}"
+        gate["last_failed"] = reason
         _save_claude_gate(gate, state_dir)
         return finish(_claude_fallback(gate, reason, plan, now))
     except Exception as exc:  # unreachable/garbled -> last reading or local estimate, never a crash
+        reason = f"usage endpoint unreachable ({type(exc).__name__})"
+        gate["last_failed"] = reason
         _save_claude_gate(gate, state_dir)
-        return finish(
-            _claude_fallback(gate, f"usage endpoint unreachable ({type(exc).__name__})", plan, now)
-        )
+        return finish(_claude_fallback(gate, reason, plan, now))
     out = parse_claude_code(payload, plan=plan, now=now)
     gate.pop("not_before", None)
     gate.pop("rejected_token", None)
+    gate.pop("last_failed", None)
     if out.get("status") == "ok":
         gate["last_ok"] = {
             "observed_at": out["observed_at"],
@@ -3191,6 +3211,68 @@ def _selftest() -> int:
             "claude gate: no token text reaches the gate file",
             "token-one" not in _claude_gate_path(gate_dir).read_text()
             and "token-two" not in _claude_gate_path(gate_dir).read_text(),
+        )
+        def unreachable(url, token, headers=None):
+            calls.append("down")
+            raise OSError("synthetic outage")
+
+        failed_at = after + timedelta(minutes=60)
+        failed = run(failed_at, unreachable)
+        calls.clear()
+        throttled = run(failed_at + timedelta(minutes=5), fetch_ok)
+        check(
+            "claude gate: after a failed refresh the throttled reading stays stale, not ok",
+            calls == []
+            and failed["status"] == "stale"
+            and throttled["status"] == "stale"
+            and "unreachable" in throttled["note"],
+            f"{calls} {failed} {throttled}",
+        )
+        healed = run(failed_at + timedelta(minutes=11), fetch_ok)
+        check(
+            "claude gate: the next good read clears the failure",
+            healed["status"] == "ok" and "last_failed" not in _load_claude_gate(gate_dir),
+            f"{healed}",
+        )
+
+        # Identity comes from Claude Code's config: a token refresh keeps the gate, a different
+        # account starts it over and never sees the old account's meter or penalty.
+        config_file = gate_dir / "claude.json"
+
+        def sign_in(account: str) -> None:
+            config_file.write_text(json.dumps({"oauthAccount": {"accountUuid": account}}))
+
+        def run_as(at: datetime, fetch) -> dict:
+            return collect_claude_code(
+                at,
+                state_dir=gate_dir,
+                creds_path=creds_file,
+                claude_config_path=config_file,
+                fetch=fetch,
+            )
+
+        acct_at = failed_at + timedelta(hours=1)
+        sign_in("synthetic-account-a")
+        run_as(acct_at, refuse(429, "3600"))
+        write_creds("token-three", now + timedelta(days=1))
+        calls.clear()
+        same = run_as(acct_at + timedelta(minutes=5), fetch_ok)
+        check(
+            "claude gate: a rotated token on the same account keeps the backoff",
+            calls == [] and "rate-limited" in same["note"],
+            f"{calls} {same}",
+        )
+        sign_in("synthetic-account-b")
+        calls.clear()
+        switched = run_as(acct_at + timedelta(minutes=6), fetch_ok)
+        check(
+            "claude gate: another account is fetched, not served the old account's meter",
+            calls == ["ok"] and switched["status"] == "ok",
+            f"{calls} {switched}",
+        )
+        check(
+            "claude gate: no account id text reaches the gate file",
+            "synthetic-account" not in _claude_gate_path(gate_dir).read_text(),
         )
 
     cx = parse_codex(fx("codex-usage.json"), now)
