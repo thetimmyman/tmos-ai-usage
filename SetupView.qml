@@ -36,6 +36,7 @@ Rectangle {
         var status = String(row && row.status || "unknown")
         if (status === "ok") return "Detected · using existing sign-in"
         if (status === "unauthenticated") return "Sign-in required"
+        if (status === "stale") return "Detected · showing the last reading while the meter refreshes"
         if (status === "estimate") return "Estimate available · verify the reported data"
         if (status === "error") return "Collection issue · check the provider's own setup"
         return "Not detected · sign in first"

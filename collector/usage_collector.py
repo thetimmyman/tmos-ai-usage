@@ -4071,6 +4071,7 @@ def main(argv: list[str] | None = None) -> int:
         return _selftest()
     if args.list_providers:
         return _list_providers(specs, definition_rows, args.json)
+    configure_paths(args.state_dir)  # before probes too: a probe's gate state follows --state-dir
     if args.probe:
         return _probe(args.probe, specs, definition_rows, args.json)
     if not args.once:
@@ -4079,7 +4080,6 @@ def main(argv: list[str] | None = None) -> int:
             "--probe ID, or --selftest"
         )
 
-    configure_paths(args.state_dir)
     STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     with os.fdopen(os.open(STATE_DIR / 'collector.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'w') as collector_lock:
         try:
