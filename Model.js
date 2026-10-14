@@ -30,7 +30,8 @@ var PROVIDER_LABEL = {
   "codex": "Codex",
   "clinepass": "ClinePass",
   "command-code": "Command Code",
-  "opencode-go": "OpenCode Go"
+  "opencode-go": "OpenCode Go",
+  "antigravity": "Google AI / Antigravity"
 }
 
 // Status badges. "estimate" is not a failure — it is a number TMOS derived rather than read, and
@@ -108,6 +109,7 @@ function normalizeProvider(rawRow, observedAtMs, reportImport, outcomeImport) {
     statusLabel: STATUS_LABEL[status] === undefined ? status : STATUS_LABEL[status],
     statusTone: STATUS_TONE[status] || "muted",
     note: row.note ? String(row.note) : "",
+    quotaGroups: normalizeQuotaGroups(row.quota_groups),
     observedAt: Date.parse(row.observed_at || "") || observedAtMs || 0,
     windows: windows,
     hasWindows: WINDOW_ORDER.some((k) => windows[k] !== undefined),
@@ -135,6 +137,20 @@ function nullableNumber(value) {
   if (value === null || value === undefined || value === "" || typeof value === "boolean") return null
   n = Number(value)
   return isFinite(n) ? n : null
+}
+
+function normalizeQuotaGroups(raw) {
+  if (!Array.isArray(raw)) return []
+  return raw.map(function(group) {
+    var lines = []
+    var windows = group && Array.isArray(group.windows) ? group.windows : []
+    windows.forEach(function(win) {
+      if (!win || WINDOW_LABEL[win.name] === undefined || nullableNumber(win.remaining_pct) === null) return
+      lines.push(WINDOW_LABEL[win.name] + ": " + Number(win.remaining_pct).toFixed(1) + "% left"
+        + (typeof win.resets_in_s === "number" ? " · " + resetText({resetsInS:win.resets_in_s}) : ""))
+    })
+    return {name: String(group && group.name || "Model group"), detail: lines.join("\n")}
+  }).filter(function(group) { return group.detail.length > 0 })
 }
 
 // Outcomes are observed ledger counts, never a claim that the whole task population was captured.
@@ -358,7 +374,7 @@ function normalizeStats(raw) {
     weekText: number(totals.tokens) > 0
       ? `${formatTokens(number(totals.tokens))} in ${number(raw.coverage_days)}d`
       : "",
-    sourceText: sourceParts.join(" · ")
+    sourceText: sourceParts.join(" · ") + (raw.note ? " · " + String(raw.note) : "")
   }
 }
 

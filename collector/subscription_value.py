@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-PROVIDERS = ('claude-code', 'codex', 'clinepass', 'command-code', 'opencode-go')
+PROVIDERS = ('claude-code', 'codex', 'clinepass', 'command-code', 'opencode-go', 'antigravity')
 # Dated published estimates, not billed amounts. Exact plan matching only.
 REFERENCES = {
     ('claude-code', 'default_claude_max_20x'): (200, 'https://support.claude.com/en/articles/11049741-what-is-the-max-plan'),

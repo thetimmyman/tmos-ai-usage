@@ -39,7 +39,7 @@ ShellRoot {
                 if (!source.setupLoaded || source.setupBusy) return;
                 if (window.phase === 0) {
                     if (source.setupState.completed) console.error('ERROR not a clean first run');
-                    if (setup.providerRows().length !== 5 || setup.canReviewPrice({id:'codex'})) console.error('ERROR new provider readiness');
+                    if (setup.providerRows().length !== 6 || setup.canReviewPrice({id:'codex'})) console.error('ERROR new provider readiness');
                     // Opening setup while initial status is in flight must not lose initialization.
                     if (!source.setupState.initialized) return;
                     window.phase = 1; setup.actionRequested('initialize');

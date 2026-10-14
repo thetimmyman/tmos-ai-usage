@@ -83,3 +83,14 @@ assert.equal(cohortDoc.outcomes.cohorts[0].name,'small-fixes');
 assert.equal(cohortDoc.outcomes.cohorts[0].counts.validated,1);
 assert.equal(cohortDoc.outcomes.coverageText,'observed ledger events · incomplete; observed counts only');
 console.log('PASS outcome cohort summaries normalize to observed-only counts');
+const agy=model.parseDocument(JSON.stringify({providers:[{provider:'antigravity',status:'ok',
+  quota_groups:[{name:'Gemini Models',windows:[{name:'5h',remaining_pct:60,resets_in_s:3600}]},
+                {name:'Claude and GPT models',windows:[{name:'week',remaining_pct:10}]}],
+  stats:{available:true,note:'Cache overlap unspecified',daily:[],models:[],totals:{},scan:{}}}]})).providers[0];
+assert.equal(agy.name,'Google AI / Antigravity');
+assert.equal(agy.quotaGroups.length,2);
+assert.match(agy.quotaGroups[0].detail,/60.0% left/);
+assert.match(agy.quotaGroups[1].detail,/10.0% left/);
+assert.match(agy.stats.sourceText,/Cache overlap unspecified/);
+assert.equal(agy.valueLabel,'Unranked');
+console.log('PASS Antigravity model groups and incomplete activity provenance');

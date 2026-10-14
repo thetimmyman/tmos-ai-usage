@@ -30,8 +30,15 @@ ShellRoot {
                 window.decisionCall = [taskRef, reviewer, decision, expectedRun, expectedVerification, semanticAccepted];
             }
             anchors.fill: parent
-            providers: Model.parseDocument(JSON.stringify({report_import:{imported:1,unchanged:0,rejected:1,deferred:1},outcome_import:{applied:2,duplicates:0,rejected_files:0,pending_files:1},providers:[{provider:'codex',activity:{price:{amount_usd:200,cycle:'year'}},stats:{available:false},outcomes:{available:true,coverage:{kind:'observed ledger events',complete:false},counts:{tasks:2,pending:1,validated:1,failed:0,abandoned:0,reworked:0,turns:3,errors:0},by_cohort:{smoke:{tasks:2,pending:1,validated:1,failed:0,abandoned:0,reworked:0,turns:3,errors:0}}}},{provider:'opencode-go',activity:{price:{amount_usd:10,cycle:'month'}},windows:[{name:'week',remaining_pct:30}],report:{metrics:{Requests:1000},note:'Sample'},billing:{cash_paid_usd:null,allocated_known_usd:null,coverage_complete:false,invoices:[]}}]})).providers
+            providers: Model.parseDocument(JSON.stringify({report_import:{imported:1,unchanged:0,rejected:1,deferred:1},outcome_import:{applied:2,duplicates:0,rejected_files:0,pending_files:1},providers:[{provider:'codex',activity:{price:{amount_usd:200,cycle:'year'}},stats:{available:false},outcomes:{available:true,coverage:{kind:'observed ledger events',complete:false},counts:{tasks:2,pending:1,validated:1,failed:0,abandoned:0,reworked:0,turns:3,errors:0},by_cohort:{smoke:{tasks:2,pending:1,validated:1,failed:0,abandoned:0,reworked:0,turns:3,errors:0}}}},{provider:'antigravity',quota_groups:[{name:'Gemini Models',windows:[{name:'5h',remaining_pct:60,resets_in_s:3600}]},{name:'Claude and GPT models',windows:[{name:'week',remaining_pct:10}]}]},{provider:'opencode-go',activity:{price:{amount_usd:10,cycle:'month'}},windows:[{name:'week',remaining_pct:30}],report:{metrics:{Requests:1000},note:'Sample'},billing:{cash_paid_usd:null,allocated_known_usd:null,coverage_complete:false,invoices:[]}}]})).providers
         }
+        Timer { interval: 300; running: true; onTriggered: view.selectedId = 'antigravity' }
+        Timer { interval: 450; running: true; onTriggered: {
+            var gemini = window.findNamed(view, 'quotaGroup-Gemini Models');
+            var thirdParty = window.findNamed(view, 'quotaGroup-Claude and GPT models');
+            if (!gemini || gemini.text.indexOf('60.0% left') < 0 || !thirdParty || thirdParty.text.indexOf('10.0% left') < 0)
+                console.error('ERROR Antigravity quota groups are not visible');
+        } }
         function findNamed(item, name) {
             if (item.objectName === name) return item;
             var kids = item.children || [];

@@ -13,6 +13,13 @@ validation evidence can support the task-value comparison.
 | ClinePass | The authenticated Cline account's usage-limit reading; some limit/detail routes are app-facing and their response contracts are not fully documented publicly | Cursor-paginated `/users/{id}/usages`, at most 10 pages × 100 rows per refresh, privately resumed and deduplicated across refreshes | Checkpoints retain allowlisted token counts and model labels only. Coverage remains partial even when the walk reaches the endpoint's end: retention and completeness are not certified. The field named `costUsd` is not presented as USD until its units are independently verified. |
 | Command Code | The authenticated account's 5-hour/weekly limits and monthly credit pool | Current billing-period usage-summary endpoint: aggregate requests, success/failure counts, tokens and credits; not a per-request export | Public Studio documentation describes per-request detail in the UI but does not document a personal usage-history export API. Credits are not cash subscription spend. |
 | OpenCode Go | OpenCode Go's first-party `/zen/go/v1/usage` meter | Local OpenCode session database/transcripts; optional imported request-log sample | The user's Go credential supports quota reads, not the documented Console export. The Console Usage API requires a separate service-account key and organization/member/service-account/model scope; organization exports may include other members, web search, BYOK and free rows. Workspace charges are not Go subscription expense. |
+| Google AI / Antigravity | Official CLI 1.3.5+ read-only JSON `/usage`; Gemini and Claude/GPT groups remain separate | `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl`, falling back to `transcript.jsonl` | Local explicit inputs and reported input/output tokens only; summary/chunk duplicates excluded. Cache overlap and model names are unspecified. Previous sign-ins may be represented; current Gemini API mode is excluded. No prompt content, account token, subscription fee, or validated-task claim is exported. |
+
+Antigravity authentication remains inside the official CLI. Its
+[headless documentation](https://www.antigravity.google/docs/cli/headless/)
+and [official changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md)
+describe read-only slash commands in print mode. AI Usage requires 1.3.5 or newer
+before invoking `/usage`, so an old CLI cannot interpret the quota query as a model prompt.
 
 ## API versus subscription reports
 

@@ -41,6 +41,7 @@ DEAD=http://127.0.0.1:9
 # directory is included on purpose — an unusable definition has to show up in the document too.
 FIXDEFS="$PWD/collector/fixtures/providers.d:$PWD/collector/fixtures/providers.reject.d"
 env TMOS_USAGE_STATE_DIR="$TMPRUN" HOME="$TMPRUN" \
+    TMOS_AGY_BIN="$TMPRUN/missing-agy" \
     OPENCODE_GO_BASE="$DEAD" CLINE_API_BASE="$DEAD" COMMAND_CODE_API_BASE="$DEAD" \
     CLAUDE_API_BASE="$DEAD" CODEX_BACKEND_BASE="$DEAD" \
     TMOS_USAGE_PROVIDERS_DIR="$FIXDEFS" \
@@ -51,7 +52,7 @@ import json, sys
 doc = json.load(open(sys.argv[1]))
 rows = doc["providers"]
 bad = [r["provider"] for r in rows if r["status"] == "ok"]
-builtins = {"claude-code", "codex", "clinepass", "command-code", "opencode-go"}
+builtins = {"claude-code", "codex", "clinepass", "command-code", "opencode-go", "antigravity"}
 ids = [r["provider"] for r in rows]
 missing = sorted(builtins - set(ids))
 assert not missing, f"built-in providers missing from the document: {missing}"

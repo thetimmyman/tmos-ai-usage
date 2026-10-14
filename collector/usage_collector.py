@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/usage_collector.py — one honest picture of how much AI subscription is left.
 
-Five built-in providers, five first-party sources, and any provider you define as data, in one
+Built-in providers, first-party readings, and any provider you define as data, in one
 merged document under the tmosd state path (`~/.local/state/tmos/usage.json`, atomic write). The
 shell plugin `shell/plugins/tmos.usage`
 reads that file and does no network of its own (Omarchy-native rule N-series: a plugin displays,
@@ -811,6 +811,7 @@ def _scan_transcripts(
     contribution,
     state_dir: Path | None = None,
     pattern: str = "*.jsonl",
+    include=None,
 ) -> tuple[list[dict], dict]:
     """Per-file contributions for files touched inside the window, reusing the cache.
 
@@ -824,6 +825,8 @@ def _scan_transcripts(
     seen: set[str] = set()
     scanned = cached = 0
     for path in _recent_files(base, pattern, cutoff):
+        if include is not None and not include(path):
+            continue
         key = str(path)
         seen.add(key)
         try:
@@ -839,10 +842,16 @@ def _scan_transcripts(
             out.append(hit)
             cached += 1
             continue
-        fresh = _json_safe(contribution(path, now))
+        raw = contribution(path, now)
+        fresh = _json_safe(raw)
         fresh["size"] = info.st_size
         fresh["mtime"] = info.st_mtime
-        entries[key] = fresh
+        # A reader may defer a future-dated row until the next refresh. Do not
+        # permanently cache a partial contribution even if the file stays unchanged.
+        if raw.get("cacheable", True):
+            entries[key] = fresh
+        else:
+            entries.pop(key, None)
         out.append(fresh)
         scanned += 1
     # Forget files that vanished or aged out — but only under this base, since the cache is shared.
@@ -1506,6 +1515,14 @@ STATS_SCANNERS = {
     "clinepass": scan_cline_stats,
 }
 
+
+def scan_antigravity_stats(now=None, root=None, state_dir=None):
+    import agy_usage
+    return agy_usage.scan_stats(sys.modules[__name__], now, root, state_dir)
+
+
+STATS_SCANNERS["antigravity"] = scan_antigravity_stats
+
 # Providers TMOS reads no history for. Empty today: all five keep something readable, and this stays
 # as the honest fallback — a provider with no local history must say so rather than draw an empty
 # chart, and a provider added later lands here until its reader exists.
@@ -1598,6 +1615,10 @@ _MISSING = object()
 # endpoint it asks. Display metadata only, never used to read anything — and the selftest asserts
 # every built-in has an entry, so a sixth adapter fails the gate until this table is filled in too.
 BUILTIN_SOURCES = {
+    "antigravity": (
+        "Official agy CLI saved Google sign-in (credentials stay inside agy)",
+        "official agy -p /usage --output-format json (no model turn)",
+    ),
     "claude-code": (
         "~/.claude/.credentials.json [claudeAiOauth.accessToken]",
         "https://api.anthropic.com/api/oauth/usage ($CLAUDE_API_BASE overrides it)",
@@ -2842,12 +2863,23 @@ def collect_codex() -> dict:
         )
 
 
+def parse_antigravity(payload, now=None):
+    import agy_usage
+    return agy_usage.parse_usage(sys.modules[__name__], payload, now)
+
+
+def collect_antigravity():
+    import agy_usage
+    return agy_usage.collect(sys.modules[__name__])
+
+
 COLLECTORS = {
     "claude-code": collect_claude_code,
     "codex": collect_codex,
     "clinepass": collect_clinepass,
     "command-code": collect_command_code,
     "opencode-go": collect_opencode,
+    "antigravity": collect_antigravity,
 }
 
 
@@ -4008,7 +4040,7 @@ def _probe(
         print(f"provider:   {provider_id}")
         print("origin:     built-in adapter in collector/usage_collector.py")
         print(f"credential: {credential}")
-        print(f"endpoint:   GET {endpoint}")
+        print(f"command:    {endpoint}" if provider_id == "antigravity" else f"endpoint:   GET {endpoint}")
         try:
             row = COLLECTORS[provider_id]()
         except Exception as exc:

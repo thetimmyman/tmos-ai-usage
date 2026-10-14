@@ -581,6 +581,20 @@ Ui.Panel {
                                     }
                                 }
 
+                                Repeater {
+                                    model: providerRow.provider.quotaGroups || []
+                                    delegate: Text {
+                                        required property var modelData
+                                        width: detail.width
+                                        textFormat: Text.PlainText
+                                        text: modelData.name + "\n" + modelData.detail
+                                        wrapMode: Text.Wrap
+                                        color: root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                    }
+                                }
+
                                 // Prepaid ledger, only for a provider that has one. The meter drains
                                 // toward empty, the opposite of a limit filling toward its cap.
                                 Column {
