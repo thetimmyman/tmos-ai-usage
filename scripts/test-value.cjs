@@ -94,3 +94,25 @@ assert.match(agy.quotaGroups[1].detail,/10.0% left/);
 assert.match(agy.stats.sourceText,/Cache overlap unspecified/);
 assert.equal(agy.valueLabel,'Unranked');
 console.log('PASS Antigravity model groups and incomplete activity provenance');
+const resetDoc = model.parseDocument(JSON.stringify({
+  observed_at: '2026-10-19T14:00:00Z',
+  providers: [{
+    provider: 'opencode-go', status: 'ok',
+    windows: [
+      {name: '5h', used_pct: 100, remaining_pct: 0, resets_at: '2026-10-19T18:00:00Z', resets_in_s: 14400},
+      {name: 'week', used_pct: 40, remaining_pct: 60, resets_in_s: 7200}
+    ]
+  }]
+})).providers[0];
+assert.equal(resetDoc.windows['5h'].resetsAt, '2026-10-19T18:00:00Z');
+assert.equal(resetDoc.windows['5h'].resetsAtMs, Date.parse('2026-10-19T18:00:00Z'));
+const nowMs = Date.parse('2026-10-19T14:00:00Z');
+const text5h = model.resetText(resetDoc.windows['5h'], nowMs);
+assert.match(text5h, /^Resets Today .*\(in 4h 00m\)$/);
+const textNoObs = model.resetText({resetsInS: 7200}, nowMs);
+assert.equal(textNoObs, 'resets in 2h 00m');
+const tooltip5h = model.windowTooltip(resetDoc.windows['5h'], nowMs);
+assert.match(tooltip5h, /5h: 0.0% remaining/);
+assert.match(tooltip5h, /Resets Today/);
+console.log('PASS reset occurrence and time remaining formatting for quota windows');
+

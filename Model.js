@@ -46,6 +46,7 @@ var STATUS_TONE = {
 
 // Local weekday names, for the day rows. Index matches Date.getDay().
 var DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+var MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 function emptyDocument(error) {
   return { ok: false, error: error, providers: [], observedAt: 0, totals: normalizeTotals(null) }
@@ -71,20 +72,29 @@ function parseDocument(text, mode) {
 }
 
 function normalizeProvider(rawRow, observedAtMs, reportImport, outcomeImport) {
-  var id, windows, list, i, w, status, row
+  var id, windows, list, i, w, status, row, observedAt, resetsInS, resetsAt, resetsAtMs
   row = rawRow || {}
   id = String(row.provider || "?")
+  observedAt = Date.parse(row.observed_at || "") || observedAtMs || 0
   windows = {}
   list = Array.isArray(row.windows) ? row.windows : []
   for (i = 0; i < list.length; i++) {
     w = list[i]
     if (!w || WINDOW_LABEL[w.name] === undefined) continue
+    resetsInS = (typeof w.resets_in_s === "number") ? w.resets_in_s : -1
+    resetsAt = typeof w.resets_at === "string" ? w.resets_at : ""
+    resetsAtMs = resetsAt ? (Date.parse(resetsAt) || 0) : 0
+    if (!resetsAtMs && resetsInS > 0 && observedAt > 0) {
+      resetsAtMs = observedAt + resetsInS * 1000
+    }
     windows[w.name] = {
       name: w.name,
       label: WINDOW_LABEL[w.name],
       usedPct: number(w.used_pct),
       remainingPct: number(w.remaining_pct),
-      resetsInS: (typeof w.resets_in_s === "number") ? w.resets_in_s : -1
+      resetsInS: resetsInS,
+      resetsAt: resetsAt,
+      resetsAtMs: resetsAtMs
     }
   }
   status = String(row.status || "unknown")
@@ -109,8 +119,8 @@ function normalizeProvider(rawRow, observedAtMs, reportImport, outcomeImport) {
     statusLabel: STATUS_LABEL[status] === undefined ? status : STATUS_LABEL[status],
     statusTone: STATUS_TONE[status] || "muted",
     note: row.note ? String(row.note) : "",
-    quotaGroups: normalizeQuotaGroups(row.quota_groups),
-    observedAt: Date.parse(row.observed_at || "") || observedAtMs || 0,
+    quotaGroups: normalizeQuotaGroups(row.quota_groups, observedAt),
+    observedAt: observedAt,
     windows: windows,
     hasWindows: WINDOW_ORDER.some((k) => windows[k] !== undefined),
     balance: normalizeBalance(row.balance),
@@ -139,18 +149,39 @@ function nullableNumber(value) {
   return isFinite(n) ? n : null
 }
 
-function normalizeQuotaGroups(raw) {
+function normalizeQuotaGroups(raw, observedAtMs) {
+  var groups, i, j, group, lines, windows, win, resetsInS, resetsAt, resetsAtMs, winObj, resetStr
   if (!Array.isArray(raw)) return []
-  return raw.map(function(group) {
-    var lines = []
-    var windows = group && Array.isArray(group.windows) ? group.windows : []
-    windows.forEach(function(win) {
-      if (!win || WINDOW_LABEL[win.name] === undefined || nullableNumber(win.remaining_pct) === null) return
-      lines.push(WINDOW_LABEL[win.name] + ": " + Number(win.remaining_pct).toFixed(1) + "% left"
-        + (typeof win.resets_in_s === "number" ? " · " + resetText({resetsInS:win.resets_in_s}) : ""))
-    })
-    return {name: String(group && group.name || "Model group"), detail: lines.join("\n")}
-  }).filter(function(group) { return group.detail.length > 0 })
+  groups = []
+  for (i = 0; i < raw.length; i++) {
+    group = raw[i]
+    lines = []
+    windows = group && Array.isArray(group.windows) ? group.windows : []
+    for (j = 0; j < windows.length; j++) {
+      win = windows[j]
+      if (!win || WINDOW_LABEL[win.name] === undefined || nullableNumber(win.remaining_pct) === null) continue
+      resetsInS = (typeof win.resets_in_s === "number") ? win.resets_in_s : -1
+      resetsAt = typeof win.resets_at === "string" ? win.resets_at : ""
+      resetsAtMs = resetsAt ? (Date.parse(resetsAt) || 0) : 0
+      if (!resetsAtMs && resetsInS > 0 && observedAtMs > 0) {
+        resetsAtMs = observedAtMs + resetsInS * 1000
+      }
+      winObj = {
+        name: win.name,
+        label: WINDOW_LABEL[win.name],
+        remainingPct: Number(win.remaining_pct),
+        resetsInS: resetsInS,
+        resetsAt: resetsAt,
+        resetsAtMs: resetsAtMs
+      }
+      resetStr = resetText(winObj)
+      lines.push(`${WINDOW_LABEL[win.name]}: ${Number(win.remaining_pct).toFixed(1)}% left${resetStr ? " · " + resetStr : ""}`)
+    }
+    if (lines.length > 0) {
+      groups.push({ name: String(group && group.name || "Model group"), detail: lines.join("\n") })
+    }
+  }
+  return groups
 }
 
 // Outcomes are observed ledger counts, never a claim that the whole task population was captured.
@@ -491,11 +522,66 @@ function pad(n) {
   return n < 10 ? `0${n}` : `${n}`
 }
 
-function resetText(window) {
-  var text
+function formatTime(date) {
+  var h, m, ampm, h12
+  h = date.getHours()
+  m = date.getMinutes()
+  ampm = h >= 12 ? "PM" : "AM"
+  h12 = h % 12 || 12
+  return `${h12}:${pad(m)} ${ampm}`
+}
+
+function formatResetOccurrence(resetsAtMs, nowMs) {
+  var target, now, targetMidnight, nowMidnight, dayDiff, timeStr
+  if (!resetsAtMs) return ""
+  target = new Date(resetsAtMs)
+  if (isNaN(target.getTime())) return ""
+  now = (typeof nowMs === "number" && nowMs > 0) ? new Date(nowMs) : new Date()
+
+  targetMidnight = new Date(target.getFullYear(), target.getMonth(), target.getDate()).getTime()
+  nowMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  dayDiff = Math.round((targetMidnight - nowMidnight) / 86400000)
+  timeStr = formatTime(target)
+
+  if (dayDiff === 0) return `Today ${timeStr}`
+  if (dayDiff === 1) return `Tomorrow ${timeStr}`
+  if (dayDiff > 1 && dayDiff < 7) return `${DAY_NAMES[target.getDay()]} ${timeStr}`
+  if (target.getFullYear() === now.getFullYear()) {
+    return `${MONTH_NAMES[target.getMonth()]} ${target.getDate()} ${timeStr}`
+  }
+  return `${MONTH_NAMES[target.getMonth()]} ${target.getDate()}, ${target.getFullYear()} ${timeStr}`
+}
+
+function resetText(window, nowMs) {
+  var now, secs, occurrence, cd
   if (!window) return ""
-  text = countdown(window.resetsInS)
-  return text === "" ? "" : `resets in ${text}`
+  now = (typeof nowMs === "number" && nowMs > 0) ? nowMs : Date.now()
+  secs = (typeof window.resetsInS === "number") ? window.resetsInS : -1
+  if (window.resetsAtMs > 0) {
+    secs = Math.max(0, Math.round((window.resetsAtMs - now) / 1000))
+  }
+  occurrence = window.resetsAtMs > 0 ? formatResetOccurrence(window.resetsAtMs, now) : ""
+  cd = countdown(secs)
+
+  if (occurrence && cd) {
+    if (cd === "now") return `Resets ${occurrence} (now)`
+    return `Resets ${occurrence} (in ${cd})`
+  }
+  if (occurrence) return `Resets ${occurrence}`
+  if (cd) return cd === "now" ? "resetting now" : `resets in ${cd}`
+  return ""
+}
+
+function windowTooltip(window, nowMs) {
+  var parts, reset
+  if (!window) return ""
+  parts = []
+  if (typeof window.remainingPct === "number" && window.remainingPct >= 0) {
+    parts.push(`${window.label || window.name || "Window"}: ${window.remainingPct.toFixed(1)}% remaining`)
+  }
+  reset = resetText(window, nowMs)
+  if (reset) parts.push(reset)
+  return parts.join("\n")
 }
 
 function percentText(window) {

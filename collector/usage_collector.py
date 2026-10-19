@@ -1190,6 +1190,132 @@ def _absorb(parts: list[dict], now: datetime) -> _Stats:
     return stats
 
 
+PI_ALIASES = {
+    "commandcode": "command-code",
+    "command-code": "command-code",
+    "clinepass": "clinepass",
+    "opencode-go": "opencode-go",
+    "openai-codex": "codex",
+}
+
+
+def _pi_contribution_for(provider: str):
+    def contribution(path: Path, now: datetime) -> dict:
+        cutoff = now - timedelta(days=STATS_DAYS)
+        session_id = path.stem
+        stats = _Stats("")
+        pending_prompts = []
+        try:
+            with path.open(encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("type") == "session":
+                        session_id = str(row.get("id") or session_id)
+                        continue
+                    m = row.get("message")
+                    if row.get("type") != "message" or not isinstance(m, dict):
+                        continue
+                    raw = row.get("timestamp") or m.get("timestamp")
+                    try:
+                        when = (
+                            datetime.fromtimestamp(raw / 1000, timezone.utc)
+                            if isinstance(raw, (int, float))
+                            else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                        )
+                        if when.tzinfo is None:
+                            continue
+                    except (ValueError, TypeError, OverflowError, OSError):
+                        continue
+                    if when < cutoff:
+                        continue
+                    role = m.get("role")
+                    if role == "user":
+                        pending_prompts.append(when)
+                    elif role == "assistant":
+                        prov = PI_ALIASES.get(m.get("provider"))
+                        if prov == provider:
+                            for pw in pending_prompts:
+                                stats.add_prompt(pw, session_id)
+                            u = m.get("usage") or {}
+                            inp = _num(u.get("input")) or 0
+                            out = _num(u.get("output")) or 0
+                            cr = _num(u.get("cacheRead")) or 0
+                            cw = _num(u.get("cacheWrite")) or 0
+                            tot = _int(_num(u.get("totalTokens")) or sum((inp, out, cr, cw)))
+                            bucket = {
+                                "input_tokens": inp,
+                                "output_tokens": out,
+                                "cache_read_tokens": cr,
+                                "cache_write_tokens": cw,
+                                "total_tokens": tot,
+                            }
+                            model = m.get("model")
+                            if isinstance(model, str) and "/" in model:
+                                model = model.split("/", 1)[1]
+                            stats.add_tokens(when, session_id, model, bucket, tot)
+                        pending_prompts = []
+        except OSError:
+            pass
+        return {"days": stats.days, "models": stats.models}
+
+    return contribution
+
+
+def _scan_pi_transcripts(
+    provider: str,
+    now: datetime,
+    state_dir: Path | None = None,
+    base: Path | None = None,
+) -> tuple[list[dict], dict]:
+    """Scan Pi coding agent session files for tokens/prompts attributed to provider."""
+    base = base or Path(os.path.expanduser("~/.pi/agent/sessions"))
+    if not base.is_dir():
+        return [], {"files_scanned": 0, "files_cached": 0}
+    cache = _load_stats_cache(state_dir)
+    entries = cache["files"]
+    cutoff = (now - timedelta(days=STATS_DAYS)).timestamp()
+    out: list[dict] = []
+    seen: set[str] = set()
+    scanned = cached = 0
+    contribution_fn = _pi_contribution_for(provider)
+    prefix = f"pi:{provider}:"
+    for path in _recent_files(base, "*.jsonl", cutoff):
+        key = prefix + str(path)
+        seen.add(key)
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        hit = entries.get(key)
+        if (
+            isinstance(hit, dict)
+            and hit.get("size") == info.st_size
+            and hit.get("mtime") == info.st_mtime
+        ):
+            out.append(hit)
+            cached += 1
+            continue
+        raw = contribution_fn(path, now)
+        fresh = _json_safe(raw)
+        fresh["size"] = info.st_size
+        fresh["mtime"] = info.st_mtime
+        entries[key] = fresh
+        out.append(fresh)
+        scanned += 1
+    for key in [k for k in entries if k.startswith(prefix) and k not in seen]:
+        entries.pop(key, None)
+    cache["files"] = entries
+    _save_stats_cache(cache, state_dir)
+    return out, {"files_scanned": scanned, "files_cached": cached}
+
+
 def scan_claude_stats(
     now: datetime | None = None,
     root: Path | str | None = None,
@@ -1266,8 +1392,18 @@ def scan_command_code_stats(
     now = now or _now()
     base = Path(root) if root else Path(os.path.expanduser("~/.commandcode/projects"))
     parts, scan = _scan_transcripts(base, now, _command_code_contribution, state_dir)
+    pi_included = False
+    if root is None:
+        pi_parts, pi_scan = _scan_pi_transcripts("command-code", now, state_dir)
+        if pi_parts:
+            parts.extend(pi_parts)
+            scan = {
+                "files_scanned": scan["files_scanned"] + pi_scan["files_scanned"],
+                "files_cached": scan["files_cached"] + pi_scan["files_cached"],
+            }
+            pi_included = True
     stats = _absorb(parts, now)
-    stats.source = "~/.commandcode/projects"
+    stats.source = "~/.commandcode/projects" + (" + ~/.pi/agent/sessions" if pi_included else "")
     stats.scan = scan
     return stats.finish(now)
 
@@ -1301,10 +1437,9 @@ def _stat_signature(paths: list[Path]) -> str:
 def _opencode_contribution(path: Path, now: datetime) -> dict:
     """OpenCode's own database, read read-only: tokens and model per assistant reply.
 
-    OpenCode keeps sessions in SQLite rather than in transcripts, and `message.data` is a JSON
-    blob per message: assistant rows carry
-    `tokens.{total,input,output,reasoning,cache.read,cache.write}` and a `modelID`, while the user
-    rows are the prompts. The provider's own `total` is used as given rather than re-derived.
+    OpenCode keeps sessions in SQLite rather than in transcripts. In v2 (`session_message` table),
+    assistant rows carry tokens in `data.tokens` and model in `data.model`. In v1 (`message` table),
+    assistant rows carry tokens and `modelID` in `data`. Prompts are user rows.
 
     Opened `mode=ro`: a running OpenCode holds the write lock and a WAL, and this never writes to
     the database. A row whose JSON does not parse is skipped, never guessed at.
@@ -1313,42 +1448,82 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
     cutoff_ms = _int((now - timedelta(days=STATS_DAYS)).timestamp() * 1000)
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)  # read-only; never writes
     try:
-        for session_id, created, data in con.execute(
-            "SELECT session_id, time_created, data FROM message WHERE time_created >= ?",
-            (cutoff_ms,),
-        ):
-            when = _from_epoch(created, "ms")
-            if when is None:
-                continue
-            try:
-                payload = json.loads(data)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            session = str(session_id or "")
-            raw_tokens = payload.get("tokens")
-            tokens = raw_tokens if isinstance(raw_tokens, dict) else None
-            model = payload.get("modelID")
-            if not isinstance(model, str) or not model:
-                raw_model = payload.get("model")
-                model = (
-                    raw_model.get("modelID") if isinstance(raw_model, dict) else None
-                )
-            if tokens is not None:
-                raw_cache = tokens.get("cache")
-                cache = raw_cache if isinstance(raw_cache, dict) else {}
-                bucket = {
-                    "input_tokens": _num(tokens.get("input")) or 0,
-                    "output_tokens": _num(tokens.get("output")) or 0,
-                    "cache_read_tokens": _num(cache.get("read")) or 0,
-                    "cache_write_tokens": _num(cache.get("write")) or 0,
-                }
-                total = _int(tokens.get("total")) or _int(sum(bucket.values()))
-                bucket["total_tokens"] = total
-                stats.add_tokens(when, session, model, bucket, total)
-            if str(payload.get("role")) == "user":
-                stats.add_prompt(when, session)
+        has_v2 = bool(
+            con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_message'"
+            ).fetchone()
+        )
+        if has_v2:
+            query = "SELECT session_id, time_created, type, data FROM session_message WHERE time_created >= ?"
+            for session_id, created, msg_type, data in con.execute(query, (cutoff_ms,)):
+                when = _from_epoch(created, "ms")
+                if when is None:
+                    continue
+                try:
+                    payload = json.loads(data)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                session = str(session_id or "")
+                if msg_type == "user" or payload.get("role") == "user":
+                    stats.add_prompt(when, session)
+                if msg_type == "assistant" or payload.get("role") == "assistant":
+                    raw_tokens = payload.get("tokens")
+                    tokens = raw_tokens if isinstance(raw_tokens, dict) else None
+                    if tokens is not None:
+                        raw_cache = tokens.get("cache")
+                        cache = raw_cache if isinstance(raw_cache, dict) else {}
+                        bucket = {
+                            "input_tokens": _num(tokens.get("input")) or 0,
+                            "output_tokens": _num(tokens.get("output")) or 0,
+                            "cache_read_tokens": _num(cache.get("read")) or 0,
+                            "cache_write_tokens": _num(cache.get("write")) or 0,
+                        }
+                        total = _int(tokens.get("total")) or _int(sum(bucket.values()))
+                        bucket["total_tokens"] = total
+                        raw_model = payload.get("model") or payload.get("modelID")
+                        model = (
+                            raw_model.get("id")
+                            if isinstance(raw_model, dict)
+                            else (str(raw_model) if raw_model else None)
+                        )
+                        stats.add_tokens(when, session, model, bucket, total)
+        else:
+            query = "SELECT session_id, time_created, data FROM message WHERE time_created >= ?"
+            for session_id, created, data in con.execute(query, (cutoff_ms,)):
+                when = _from_epoch(created, "ms")
+                if when is None:
+                    continue
+                try:
+                    payload = json.loads(data)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                session = str(session_id or "")
+                raw_tokens = payload.get("tokens")
+                tokens = raw_tokens if isinstance(raw_tokens, dict) else None
+                model = payload.get("modelID")
+                if not isinstance(model, str) or not model:
+                    raw_model = payload.get("model")
+                    model = (
+                        raw_model.get("modelID") if isinstance(raw_model, dict) else None
+                    )
+                if tokens is not None:
+                    raw_cache = tokens.get("cache")
+                    cache = raw_cache if isinstance(raw_cache, dict) else {}
+                    bucket = {
+                        "input_tokens": _num(tokens.get("input")) or 0,
+                        "output_tokens": _num(tokens.get("output")) or 0,
+                        "cache_read_tokens": _num(cache.get("read")) or 0,
+                        "cache_write_tokens": _num(cache.get("write")) or 0,
+                    }
+                    total = _int(tokens.get("total")) or _int(sum(bucket.values()))
+                    bucket["total_tokens"] = total
+                    stats.add_tokens(when, session, model, bucket, total)
+                if str(payload.get("role")) == "user":
+                    stats.add_prompt(when, session)
     finally:
         con.close()
     return {"days": stats.days, "models": stats.models}
@@ -1363,6 +1538,13 @@ def scan_opencode_stats(
     now = now or _now()
     db = Path(root) if root else _opencode_db_path()
     if not db.is_file():
+        if root is None:
+            pi_parts, pi_scan = _scan_pi_transcripts("opencode-go", now, state_dir)
+            if pi_parts:
+                stats = _absorb(pi_parts, now)
+                stats.source = "~/.pi/agent/sessions"
+                stats.scan = pi_scan
+                return stats.finish(now)
         return _no_stats(
             "",
             {},
@@ -1381,8 +1563,21 @@ def scan_opencode_stats(
         cache["files"][key] = contribution
         _save_stats_cache(cache, state_dir)
         scan = {"files_scanned": 1, "files_cached": 0}
-    stats = _absorb([contribution], now)
-    stats.source = "~/.local/share/opencode/opencode.db"
+    parts = [contribution]
+    pi_included = False
+    if root is None:
+        pi_parts, pi_scan = _scan_pi_transcripts("opencode-go", now, state_dir)
+        if pi_parts:
+            parts.extend(pi_parts)
+            scan = {
+                "files_scanned": scan["files_scanned"] + pi_scan["files_scanned"],
+                "files_cached": scan["files_cached"] + pi_scan["files_cached"],
+            }
+            pi_included = True
+    stats = _absorb(parts, now)
+    stats.source = "~/.local/share/opencode/opencode.db" + (
+        " + ~/.pi/agent/sessions" if pi_included else ""
+    )
     stats.scan = scan
     return stats.finish(now)
 
@@ -1636,7 +1831,7 @@ BUILTIN_SOURCES = {
         "https://api.commandcode.ai/alpha/billing/credits ($COMMAND_CODE_API_BASE overrides it)",
     ),
     "opencode-go": (
-        "~/.local/share/opencode/auth.json [opencode-go.key]",
+        "$OPENCODE_GO_API_KEY or ~/secrets/opencode-go.env, else ~/.local/share/opencode/auth.json or ~/.pi/agent/auth.json",
         "https://opencode.ai/zen/go/v1/usage ($OPENCODE_GO_BASE overrides it)",
     ),
 }
@@ -2389,16 +2584,25 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
 
 
 def collect_opencode() -> dict:
-    auth = read_json(Path(os.path.expanduser("~/.local/share/opencode/auth.json")))
-    key = None
-    if isinstance(auth, dict):
-        entry = auth.get("opencode-go")
-        if isinstance(entry, dict):
-            key = entry.get("key")
+    key = env_or_file_key(
+        "OPENCODE_GO_API_KEY", [Path(os.path.expanduser("~/secrets/opencode-go.env"))]
+    )
+    if not key:
+        auth = read_json(Path(os.path.expanduser("~/.local/share/opencode/auth.json")))
+        if isinstance(auth, dict):
+            entry = auth.get("opencode-go")
+            if isinstance(entry, dict):
+                key = entry.get("key")
+    if not key:
+        pi_auth = read_json(Path(os.path.expanduser("~/.pi/agent/auth.json")))
+        if isinstance(pi_auth, dict):
+            entry = pi_auth.get("opencode-go")
+            if isinstance(entry, dict):
+                key = entry.get("key")
     if not key:
         return unknown(
             "opencode-go",
-            "no opencode-go key in ~/.local/share/opencode/auth.json; "
+            "no opencode-go key in ~/secrets/opencode-go.env, ~/.local/share/opencode/auth.json, or ~/.pi/agent/auth.json; "
             "run `opencode auth login`",
             status="unauthenticated",
         )
