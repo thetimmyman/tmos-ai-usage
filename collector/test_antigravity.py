@@ -59,7 +59,7 @@ class AntigravityTest(unittest.TestCase):
         with patch("agy_usage.cli_json", return_value=quota()) as invoke:
             result = c.collect_antigravity()
         self.assertEqual(result["status"], "ok")
-        invoke.assert_called_once_with()
+        invoke.assert_called_once_with(c.STATE_DIR / "agy-cli.log")
         import agy_usage
         with patch("agy_usage.shutil.which", return_value="/mock/agy"), \
                 patch("agy_usage.subprocess.run") as run:
@@ -67,7 +67,8 @@ class AntigravityTest(unittest.TestCase):
                 if "--version" in args:
                     kwargs["stdout"].write(b"1.3.5\n")
                 else:
-                    self.assertEqual(args[1:], ["-p", "/usage", "--output-format", "json", "--print-timeout", "15s"])
+                    self.assertEqual(args[1:8], ["-p", "/usage", "--output-format", "json", "--print-timeout", "15s",
+                                                 "--log-file"])
                     kwargs["stdout"].write(json.dumps(quota()).encode())
                 return type("Result", (), {"returncode": 0})()
             run.side_effect = output
@@ -234,10 +235,12 @@ class ReviewFindingsTest(unittest.TestCase):
 
     def test_opencode_reads_v1_only_sessions_beside_v2_and_counts_each_message_once(self):
         ms = int(NOW.timestamp() * 1000)
-        user = json.dumps({"role": "user"})
+        # As OpenCode writes them: a v1 prompt names its selected model, a v2 prompt names none.
+        v1_user = json.dumps({"role": "user", "model": {"providerID": "opencode-go", "modelID": "m1"}})
+        v2_user = json.dumps({"text": "x"})
         tokens = {"input": 10, "output": 5, "total": 15, "cache": {}}
-        v1_reply = json.dumps({"role": "assistant", "modelID": "m1", "tokens": tokens})
-        v2_reply = json.dumps({"role": "assistant", "model": {"id": "m1"}, "tokens": tokens})
+        v1_reply = json.dumps({"role": "assistant", "providerID": "opencode-go", "modelID": "m1", "tokens": tokens})
+        v2_reply = json.dumps({"model": {"id": "m1", "providerID": "opencode-go"}, "tokens": tokens})
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "opencode.db"
             con = sqlite3.connect(db)
@@ -248,14 +251,14 @@ class ReviewFindingsTest(unittest.TestCase):
             v1 = "INSERT INTO message VALUES (?, ?, ?, ?, ?)"
             v2 = "INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)"
             # Migrated: the same messages under the same ids in both tables.
-            con.execute(v1, ("a0", "migrated", ms, ms, user))
+            con.execute(v1, ("a0", "migrated", ms, ms, v1_user))
             con.execute(v1, ("a1", "migrated", ms, ms, v1_reply))
-            con.execute(v2, ("a0", "migrated", "user", 0, ms, ms, user))
+            con.execute(v2, ("a0", "migrated", "user", 0, ms, ms, v2_user))
             con.execute(v2, ("a1", "migrated", "assistant", 1, ms, ms, v2_reply))
             # Still only in v1, and only in v2.
-            con.execute(v1, ("b0", "legacy", ms, ms, user))
+            con.execute(v1, ("b0", "legacy", ms, ms, v1_user))
             con.execute(v1, ("b1", "legacy", ms, ms, v1_reply))
-            con.execute(v2, ("c0", "new", "user", 0, ms, ms, user))
+            con.execute(v2, ("c0", "new", "user", 0, ms, ms, v2_user))
             con.execute(v2, ("c1", "new", "assistant", 1, ms, ms, v2_reply))
             con.commit()
             con.close()
@@ -582,6 +585,168 @@ class ThirdReviewTest(unittest.TestCase):
         # With the parent gone, the child's copies are the only ones left, and they count.
         self.assertEqual((orphaned["totals"]["prompts"], orphaned["totals"]["tokens"]), (3, 60))
         self.assertEqual(orphaned_turns, {"command-code": {"turns": 3, "sessions": 2}})
+
+
+def _opencode_db(path, v2=(), v1=()):
+    """An OpenCode database laid out as OpenCode writes it, rows inserted last first.
+
+    `v2` rows are `(session, seq, type, data)`; `v1` rows are `(session, data)`, written in the
+    same millisecond with ids in the order given. Reading in insertion order would be wrong.
+    """
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, "
+                "time_updated integer NOT NULL, data text NOT NULL)")
+    con.execute("CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, "
+                "seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)")
+    ms = int(NOW.timestamp() * 1000)
+    for n, (session, seq, kind, data) in reversed(list(enumerate(v2))):
+        con.execute("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (f"v2-{n:03d}", session, kind, seq, ms, ms, json.dumps(data)))
+    for n, (session, data) in reversed(list(enumerate(v1))):
+        con.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)", (f"v1-{n:03d}", session, ms, ms, json.dumps(data)))
+    con.commit()
+    con.close()
+    return path
+
+
+def _opencode_tokens(input_tokens, output=0, reasoning=0, read=0, write=0, total=None):
+    tokens = {"input": input_tokens, "output": output, "reasoning": reasoning, "cache": {"read": read, "write": write}}
+    return tokens if total is None else {**tokens, "total": total}
+
+
+class FourthReviewTest(unittest.TestCase):
+    def test_opencode_counts_only_what_opencode_go_answered(self):
+        go = {"id": "m1", "providerID": "opencode-go", "variant": "default"}
+        other = {"id": "claude-x", "providerID": "anthropic", "variant": "default"}
+        local = {"id": "qwen", "providerID": "halogen", "variant": "default"}
+        prompt = {"text": "x", "time": {"created": 0}}  # a v2 prompt names no provider
+
+        def reply(model, n):
+            return {"agent": "build", "model": model, "tokens": _opencode_tokens(n)}
+        v2 = [
+            ("go", 0, "user", prompt), ("go", 1, "assistant", reply(go, 10)), ("go", 2, "assistant", reply(go, 5)),
+            ("other", 0, "user", prompt), ("other", 1, "assistant", reply(other, 1000)),
+            ("local", 0, "user", prompt), ("local", 1, "assistant", reply(local, 2000)),
+            # Switched provider mid-session: a prompt belongs to the provider that answered it.
+            ("switch", 0, "user", prompt), ("switch", 1, "assistant", reply(other, 100)),
+            ("switch", 2, "user", prompt), ("switch", 3, "assistant", reply(go, 7)),
+            # Not answered yet: whose it is is not known yet.
+            ("waiting", 0, "user", prompt),
+        ]
+        v1 = [
+            ("legacy", {"role": "user", "model": {"providerID": "anthropic", "modelID": "claude-x"}}),
+            ("legacy", {"role": "assistant", "providerID": "anthropic", "modelID": "claude-x",
+                        "tokens": _opencode_tokens(500, total=500)}),
+            ("legacy", {"role": "user", "model": {"providerID": "opencode-go", "modelID": "m2"}}),
+            ("legacy", {"role": "assistant", "providerID": "opencode-go", "modelID": "m2",
+                        "tokens": _opencode_tokens(20, total=20)}),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _opencode_db(Path(tmp) / "opencode.db", v2, v1)
+            stats = c.scan_opencode_stats(NOW, db, Path(tmp) / "state")
+        self.assertEqual(stats["totals"]["prompts"], 3)
+        self.assertEqual(stats["totals"]["tokens"], 42)
+        self.assertEqual(stats["totals"]["sessions"], 3)
+        self.assertEqual(sorted(model["id"] for model in stats["models"]), ["m1", "m2"])
+
+    def test_opencode_reasoning_is_output_and_part_of_the_total(self):
+        go = {"id": "m1", "providerID": "opencode-go"}
+        v2 = [("s", 0, "user", {"text": "x"}),
+              ("s", 1, "assistant", {"model": go, "tokens": _opencode_tokens(10, 5, 20, 3, 2)})]
+        # OpenCode's own total, where it stored one, is kept as it is.
+        v1 = [("t", {"role": "assistant", "providerID": "opencode-go", "modelID": "m1",
+                     "tokens": _opencode_tokens(1, 1, 1, total=3)})]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _opencode_db(Path(tmp) / "opencode.db", v2, v1)
+            stats = c.scan_opencode_stats(NOW, db, Path(tmp) / "state")
+        self.assertEqual(stats["totals"]["tokens"], 43)
+        model = stats["models"][0]
+        self.assertEqual((model["output_tokens"], model["total_tokens"]), (27, 43))
+
+    def test_agy_quota_checks_keep_one_log_file(self):
+        import agy_usage
+        calls = []
+
+        def fake(args, **kwargs):
+            if "--version" in args:
+                kwargs["stdout"].write(b"1.4.3\n")
+            else:
+                calls.append(list(args))
+                log = Path(args[args.index("--log-file") + 1])
+                with log.open("a") as stream:  # appends, as some agy release might
+                    stream.write(f"run {len(calls)}\n")
+                kwargs["stdout"].write(json.dumps(quota()).encode())
+            return type("Result", (), {"returncode": 0})()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("agy_usage.shutil.which", return_value="/mock/agy"), \
+                patch("agy_usage.subprocess.run", side_effect=fake):
+            log = Path(tmp) / "state" / "agy-cli.log"
+            for _ in range(2):
+                self.assertEqual(agy_usage.cli_json(log)["status"], "SUCCESS")
+            self.assertEqual(log.read_text(), "run 2\n")
+            self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+            # With nowhere to keep it, the log goes to a private directory removed after the run.
+            agy_usage.cli_json()
+            spare = Path(calls[-1][calls[-1].index("--log-file") + 1])
+            self.assertNotEqual(spare, log)
+            self.assertFalse(spare.parent.exists())
+        self.assertEqual(calls[0][1:7], ["-p", "/usage", "--output-format", "json", "--print-timeout", "15s"])
+
+    def test_an_agy_without_the_log_file_flag_still_reports_quota(self):
+        import agy_usage
+        calls = []
+
+        def older(args, **kwargs):
+            if "--version" in args:
+                kwargs["stdout"].write(b"1.3.5\n")
+                return type("Result", (), {"returncode": 0})()
+            calls.append(list(args))
+            if "--log-file" in args:  # what Go's flag package says about a flag it does not know
+                kwargs["stderr"].write(b"flag provided but not defined: -log-file\nUsage of agy:\n")
+                return type("Result", (), {"returncode": 2})()
+            kwargs["stdout"].write(json.dumps(quota()).encode())
+            return type("Result", (), {"returncode": 0})()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("agy_usage.shutil.which", return_value="/mock/agy"), \
+                patch("agy_usage.subprocess.run", side_effect=older):
+            self.assertEqual(agy_usage.cli_json(Path(tmp) / "agy-cli.log")["status"], "SUCCESS")
+        self.assertEqual([("--log-file" in args) for args in calls], [True, False])
+
+    def test_the_collector_keeps_agys_log_in_its_state_directory(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(c, "STATE_DIR", Path(tmp) / "state"), \
+                patch("agy_usage.cli_json", return_value=quota()) as invoke:
+            self.assertEqual(c.collect_antigravity()["status"], "ok")
+        invoke.assert_called_once_with(Path(tmp) / "state" / "agy-cli.log")
+
+    def test_a_relative_pi_session_directory_is_reported_not_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            agent = home / ".pi/agent"
+            _pi_file(agent / "sessions/--project--/s.jsonl", [{"type": "session", "id": "s"}] + _pi_turn(1, NOW, 15))
+            (agent / "settings.json").write_text(json.dumps({"sessionDir": ".pi/sessions"}))
+            cases = (({}, "sessionDir"),
+                     ({"PI_CODING_AGENT_SESSION_DIR": "relative"}, "PI_CODING_AGENT_SESSION_DIR"),
+                     ({"PI_CODING_AGENT_DIR": "relative-agent"}, "PI_CODING_AGENT_DIR"))
+            for configured, setting in cases:
+                with self.subTest(setting=setting), _pi_env(home, **configured):
+                    self.assertEqual(pi_activity.sessions_location(), (agent / "sessions", setting))
+                    stats = c.scan_command_code_stats(NOW, None, home / "state")
+                    # What Pi wrote to the default directory still counts. What it did not is named.
+                    self.assertEqual(stats["totals"]["prompts"], 1)
+                    self.assertEqual(stats["scan"]["pi_unfollowed"], setting)
+                    self.assertIn("not counted", stats["note"])
+                    opencode = c.scan_opencode_stats(NOW, None, home / "state")  # no OpenCode database here
+                    self.assertFalse(opencode["available"])
+                    self.assertIn("not counted", opencode["note"])
+                    document = {"providers": [{"provider": "command-code", "stats": stats}]}
+                    subscription_value.attach(document, home, NOW)
+                    self.assertIn("not counted", document["providers"][0]["activity"]["reason"])
+            (agent / "settings.json").write_text(json.dumps({"sessionDir": str(agent / "sessions")}))
+            with _pi_env(home):
+                self.assertEqual(pi_activity.sessions_location(), (agent / "sessions", None))
+                stats = c.scan_command_code_stats(NOW, None, home / "state")
+            self.assertNotIn("pi_unfollowed", stats["scan"])
+            self.assertNotIn("not counted", stats.get("note", ""))
 
 
 if __name__ == "__main__":

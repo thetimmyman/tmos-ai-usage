@@ -112,6 +112,8 @@ def attach(document, directory, now=None):
     import pi_activity
     try: pi = pi_activity.scan(now=now)
     except OSError: pi = {}
+    # Pi's sessions under a relative directory are not read (`pi_activity.sessions_location`).
+    unfollowed = pi_activity.sessions_location()[1]
     # Activity is the useful default while the validated evidence channel is empty.
     document['comparison_mode'] = 'validated' if document['providers'] and all(r.get('economics') for r in document['providers']) else 'activity'
     for row in document['providers']:
@@ -138,15 +140,18 @@ def attach(document, directory, now=None):
             cli_turns = total.get('prompts') if stats.get('available') else None
             sessions = (total.get('sessions') or 0) + pi_counts.get('sessions', 0) if stats.get('available') or pi_counts else None
             source = str(stats.get('source') or '') + (' + ' + pi_activity.display(pi_activity.sessions_dir()) if pi_counts.get('turns') else '')
+        reason = ('Set your subscription price in this provider tab.' if price is None else
+                  'No observed local turns available.' if turns is None else
+                  'Provisional: observed local turns / monthly subscription fee; incomplete harness coverage. Not task quality or cost per completed task.')
+        if unfollowed is not None and row['provider'] in set(pi_activity.ALIASES.values()):
+            reason += ' ' + pi_activity.unfollowed_note(unfollowed)
         row['activity'] = {'observed_turns': turns,
                            'pi_turns': pi_turns,
                            'cli_turns': cli_turns, 'observed_sessions': sessions,
                            'window_days': stats.get('coverage_days') or (30 if pi_counts else None), 'price': price,
                            'source': source,
                            'first_date': total.get('first_date'), 'last_date': total.get('last_date'),
-                           'reason': ('Set your subscription price in this provider tab.' if price is None else
-                                      'No observed local turns available.' if turns is None else
-                                      'Provisional: observed local turns / monthly subscription fee; incomplete harness coverage. Not task quality or cost per completed task.')}
+                           'reason': reason}
         row['economics_reason'] = ('Validated outcome and recognized-spend receipts connected.' if row.get('economics') else
                                    'Validated task outcomes and matched recognized spend are not connected. Request success does not establish task validation.')
 

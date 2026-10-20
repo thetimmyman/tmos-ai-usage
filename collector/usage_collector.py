@@ -720,7 +720,7 @@ def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
 # borrows another provider's history, and a scan that finds nothing reports nothing, not zero.
 
 STATS_DAYS = 30
-STATS_CACHE_VERSION = 5
+STATS_CACHE_VERSION = 6
 STATS_MAX_FILES = 600
 
 
@@ -1334,6 +1334,23 @@ def _pi_source() -> str:
     return pi_activity.display(pi_activity.sessions_dir())
 
 
+def _pi_followed(result: dict) -> dict:
+    """`result`, saying so when a relative Pi setting keeps some of Pi's sessions out of it.
+
+    Pi resolves a relative session directory from the folder each session starts in, which a
+    collector cannot know, so only Pi's default directory is read. The note leads, because a note
+    is cut to one line, and `scan.pi_unfollowed` names the setting.
+    """
+    setting = pi_activity.sessions_location()[1]
+    if setting is None:
+        return result
+    note = pi_activity.unfollowed_note(setting)
+    result["note"] = _scrub(f"{note} {result['note']}" if result.get("note") else note)
+    scan = result.get("scan")
+    result["scan"] = {**(scan if isinstance(scan, dict) else {}), "pi_unfollowed": setting}
+    return result
+
+
 def _resolved_path(path: Path) -> str:
     try:
         return str(path.resolve())
@@ -1510,7 +1527,8 @@ def scan_command_code_stats(
     stats = _absorb(parts, now)
     stats.source = "~/.commandcode/projects" + (" + " + _pi_source() if pi_included else "")
     stats.scan = scan
-    return stats.finish(now)
+    result = stats.finish(now)
+    return _pi_followed(result) if root is None else result
 
 
 def _opencode_db_path() -> Path:
@@ -1539,12 +1557,20 @@ def _stat_signature(paths: list[Path]) -> str:
     return "|".join(parts)
 
 
+OPENCODE_GO = "opencode-go"
+
+
 def _opencode_bucket(tokens: dict) -> tuple[dict, int]:
+    """A reply's buckets and total: OpenCode's own `total` where it stored one, else every bucket.
+
+    OpenCode keeps `reasoning` beside `output`, and its own `total` adds both. Reasoning is output
+    the model generated, so it is counted in `output_tokens`, the way Codex reports it.
+    """
     raw_cache = tokens.get("cache")
     cache = raw_cache if isinstance(raw_cache, dict) else {}
     bucket = {
         "input_tokens": _num(tokens.get("input")) or 0,
-        "output_tokens": _num(tokens.get("output")) or 0,
+        "output_tokens": (_num(tokens.get("output")) or 0) + (_num(tokens.get("reasoning")) or 0),
         "cache_read_tokens": _num(cache.get("read")) or 0,
         "cache_write_tokens": _num(cache.get("write")) or 0,
     }
@@ -1564,52 +1590,82 @@ def _opencode_payload(created, data) -> tuple[datetime | None, dict | None]:
     return (when, payload) if isinstance(payload, dict) else (None, None)
 
 
-def _opencode_v2_row(stats, session_id, created, msg_type, data) -> None:
-    """A v2 `session_message` row: tokens in `data.tokens`, the model in `data.model`."""
-    when, payload = _opencode_payload(created, data)
-    if payload is None:
-        return
-    session = str(session_id or "")
-    if msg_type == "user" or payload.get("role") == "user":
-        stats.add_prompt(when, session)
-    if msg_type == "assistant" or payload.get("role") == "assistant":
-        raw_tokens = payload.get("tokens")
-        if isinstance(raw_tokens, dict):
-            bucket, total = _opencode_bucket(raw_tokens)
-            raw_model = payload.get("model") or payload.get("modelID")
-            model = (
-                raw_model.get("id")
-                if isinstance(raw_model, dict)
-                else (str(raw_model) if raw_model else None)
-            )
-            stats.add_tokens(when, session, model, bucket, total)
+def _opencode_provider(payload: dict) -> str | None:
+    """The provider a message names: `providerID` on a v1 reply, `model.providerID` on a v1 prompt
+    and a v2 reply. A v2 prompt names none."""
+    provider = payload.get("providerID")
+    if not isinstance(provider, str) or not provider:
+        model = payload.get("model")
+        provider = model.get("providerID") if isinstance(model, dict) else None
+    return provider if isinstance(provider, str) and provider else None
 
 
-def _opencode_v1_row(stats, session_id, created, data) -> None:
-    """A v1 `message` row: tokens and `modelID` in `data`, prompts are the user rows."""
-    when, payload = _opencode_payload(created, data)
-    if payload is None:
-        return
-    session = str(session_id or "")
-    raw_tokens = payload.get("tokens")
+def _opencode_model(payload: dict) -> str | None:
+    """The model a reply names: `modelID` in v1, `model.id` in v2."""
     model = payload.get("modelID")
-    if not isinstance(model, str) or not model:
-        raw_model = payload.get("model")
-        model = raw_model.get("modelID") if isinstance(raw_model, dict) else None
-    if isinstance(raw_tokens, dict):
-        bucket, total = _opencode_bucket(raw_tokens)
-        stats.add_tokens(when, session, model, bucket, total)
-    if str(payload.get("role")) == "user":
-        stats.add_prompt(when, session)
+    if isinstance(model, str) and model:
+        return model
+    raw = payload.get("model")
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get("modelID")
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _opencode_count(stats: "_Stats", rows) -> None:
+    """Count the prompts and replies OpenCode Go answered, from one table's rows in session order.
+
+    `rows` are `(session, when, kind, payload)`, each session's in the order it was written. A
+    prompt counts for the provider it names (a v1 prompt names its selected model's), else for
+    the provider of the first reply after it (a v2 prompt names none). A prompt with no reply yet
+    waits: the reply changes the database, and the next read counts it. Other providers' prompts
+    and replies, local models' included, are not OpenCode Go usage.
+    """
+    current, waiting = None, []
+    for session, when, kind, payload in rows:
+        if session != current:
+            current, waiting = session, []
+        provider = _opencode_provider(payload)
+        if kind == "user":
+            if provider is None:
+                waiting.append(when)
+            elif provider == OPENCODE_GO:
+                stats.add_prompt(when, session)
+            continue
+        if kind != "assistant":
+            continue
+        if provider == OPENCODE_GO:
+            for asked in waiting:
+                stats.add_prompt(asked, session)
+            raw_tokens = payload.get("tokens")
+            if isinstance(raw_tokens, dict):
+                bucket, total = _opencode_bucket(raw_tokens)
+                stats.add_tokens(when, session, _opencode_model(payload), bucket, total)
+        waiting = []
+
+
+def _opencode_rows(rows, kind_of):
+    """`(session, when, kind, payload)` for each row whose time and JSON parse."""
+    for session_id, created, msg_type, data in rows:
+        when, payload = _opencode_payload(created, data)
+        if payload is not None:
+            yield str(session_id or ""), when, kind_of(msg_type, payload.get("role")), payload
+
+
+def _opencode_kind(msg_type, role) -> str | None:
+    if "user" in (msg_type, role):
+        return "user"
+    return "assistant" if "assistant" in (msg_type, role) else None
 
 
 def _opencode_contribution(path: Path, now: datetime) -> dict:
-    """OpenCode's own database, read read-only: tokens and model per assistant reply.
+    """OpenCode Go's prompts, and tokens and model per reply, from OpenCode's own database.
 
     OpenCode keeps sessions in SQLite rather than in transcripts. In v2 (`session_message` table),
-    assistant rows carry tokens in `data.tokens` and model in `data.model`. In v1 (`message` table),
-    assistant rows carry tokens and `modelID` in `data`. Prompts are user rows. A database in the
-    middle of the v2 cutover has both tables, and both are read (each message once, by id).
+    replies carry tokens in `data.tokens` and the model and provider in `data.model`, and prompts
+    name no provider. In v1 (`message` table), replies carry tokens, `modelID` and `providerID` in
+    `data`, and prompts their selected model's provider. A database in the middle of the v2 cutover
+    has both tables, and both are read (each message once, by id). OpenCode serves every provider
+    it is configured with; only what OpenCode Go answered is counted (`_opencode_count`).
 
     Opened `mode=ro`: a running OpenCode holds the write lock and a WAL, and this never writes to
     the database. A row whose JSON does not parse is skipped, never guessed at.
@@ -1625,19 +1681,21 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
             )
         }
         if "session_message" in tables:
-            query = "SELECT session_id, time_created, type, data FROM session_message WHERE time_created >= ?"
-            for session_id, created, msg_type, data in con.execute(query, (cutoff_ms,)):
-                _opencode_v2_row(stats, session_id, created, msg_type, data)
+            query = (
+                "SELECT session_id, time_created, type, data FROM session_message "
+                "WHERE time_created >= ? ORDER BY session_id, seq"
+            )
+            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms,)), _opencode_kind))
         # OpenCode keeps the v1 `message` rows through the v2 cutover, and its migration copies each
         # one into `session_message` under the same id. So both are read: a v1 row counts only when
         # v2 lacks its id, which keeps sessions that live only in v1 without counting migrated ones
         # twice. A database with neither table raises here, as it always did.
         if "message" in tables or "session_message" not in tables:
-            query = "SELECT session_id, time_created, data FROM message WHERE time_created >= ?"
+            query = "SELECT session_id, time_created, NULL, data FROM message WHERE time_created >= ?"
             if "session_message" in tables:
                 query += " AND id NOT IN (SELECT id FROM session_message)"
-            for session_id, created, data in con.execute(query, (cutoff_ms,)):
-                _opencode_v1_row(stats, session_id, created, data)
+            query += " ORDER BY session_id, time_created, id"
+            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms,)), _opencode_kind))
     finally:
         con.close()
     return {"days": stats.days, "models": stats.models}
@@ -1658,12 +1716,13 @@ def scan_opencode_stats(
                 stats = _absorb(pi_parts, now)
                 stats.source = _pi_source()
                 stats.scan = {**pi_scan, **_pi_share(pi_parts, now)}
-                return stats.finish(now)
-        return _no_stats(
+                return _pi_followed(stats.finish(now))
+        missing = _no_stats(
             "",
             {},
             f"OpenCode keeps its sessions in {db}, which does not exist on this machine",
         )
+        return _pi_followed(missing) if root is None else missing
     cache = _load_stats_cache(state_dir)
     key = str(db)
     signature = _stat_signature([db, Path(f"{db}-wal")])
@@ -1694,7 +1753,8 @@ def scan_opencode_stats(
         " + " + _pi_source() if pi_included else ""
     )
     stats.scan = scan
-    return stats.finish(now)
+    result = stats.finish(now)
+    return _pi_followed(result) if root is None else result
 
 
 def _cline_contribution(path: Path, now: datetime) -> dict:
@@ -3798,6 +3858,7 @@ def _selftest() -> int:
             json.dumps(
                 {
                     "role": "assistant",
+                    "providerID": "opencode-go",
                     "modelID": "gpt-5-nano",
                     "tokens": {
                         "total": 11882,

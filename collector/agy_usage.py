@@ -2,6 +2,7 @@
 
 The CLI owns authentication. No OAuth tokens, prompts, or response text are exported.
 """
+import contextlib
 import hashlib
 import json
 import math
@@ -46,10 +47,42 @@ def _run(args, timeout):
             error = diagnostic.read(MAX_OUTPUT).lower()
             if any(word in error for word in (b"authentication required", b"unauthenticated", b"sign in", b"login required")):
                 raise CliError("unauthenticated")
+            if b"flag provided but not defined" in error and b"log-file" in error:
+                raise CliError("no_log_file")
         return result.returncode, raw
 
 
-def cli_json():
+LOG_NAME = "agy-cli.log"
+
+
+def _emptied(path):
+    """`path`, created private or emptied for the next run, or None when it cannot be."""
+    try:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600))
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+@contextlib.contextmanager
+def _log_file(path):
+    """The one log file a quota check writes: `path`, else a private directory removed after it.
+
+    Without `--log-file`, agy starts a new timestamped log in its own folder on every run (about
+    20 KB), so a refresh every five minutes would leave about 290 files a day. agy rewrites the
+    file it is given; emptying it first keeps it one run long even if a release appended to it.
+    """
+    kept = _emptied(path) if path is not None else None
+    if kept is not None:
+        yield kept
+        return
+    with tempfile.TemporaryDirectory(prefix="tmos-agy-") as scratch:
+        yield Path(scratch) / LOG_NAME
+
+
+def cli_json(log_file=None):
     binary = os.environ.get("TMOS_AGY_BIN") or shutil.which("agy")
     if not binary:
         fallback = Path.home() / ".local/bin/agy"
@@ -62,8 +95,15 @@ def cli_json():
     if code or not version or tuple(int(v) for v in version.groups()) < MIN_VERSION:
         # Older releases can treat a slash command as a model prompt. Never try it.
         raise CliError("old_version")
-    code, raw = _run([binary, "-p", "/usage", "--output-format", "json",
-                      "--print-timeout", "15s"], 18)
+    usage = [binary, "-p", "/usage", "--output-format", "json", "--print-timeout", "15s"]
+    with _log_file(log_file) as log:
+        try:
+            code, raw = _run(usage + ["--log-file", str(log)], 18)
+        except CliError as exc:
+            if str(exc) != "no_log_file":
+                raise
+            # A release without `--log-file` still answers; it writes its own default log.
+            code, raw = _run(usage, 18)
     try:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -117,7 +157,7 @@ def collect(c):
     if isinstance(settings, dict) and settings.get("modelProvider") == "gemini":
         return c.unknown("antigravity", "agy is configured for Gemini API billing; use its Google subscription sign-in for quota", source="cli")
     try:
-        return parse_usage(c, cli_json())
+        return parse_usage(c, cli_json(c.STATE_DIR / LOG_NAME))
     except CliError as exc:
         reasons = {
             "unavailable": "Install the official Antigravity CLI (agy) to read its quota",

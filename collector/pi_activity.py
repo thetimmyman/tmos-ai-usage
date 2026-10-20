@@ -39,23 +39,55 @@ def agent_dir():
     return default, 'PI_CODING_AGENT_DIR is not absolute; using the default Pi agent directory'
 
 
-def sessions_dir():
-    """Where Pi writes its sessions, in Pi's own order of precedence.
+# Pi resolves each of these from the folder a session starts in when it is relative.
+UNFOLLOWED = {
+    'PI_CODING_AGENT_SESSION_DIR': "Pi's session directory variable",
+    'PI_CODING_AGENT_DIR': "Pi's agent directory variable",
+    'sessionDir': "Pi's sessionDir setting",
+}
 
-    `PI_CODING_AGENT_SESSION_DIR`, else the agent settings' `sessionDir`, else `sessions` in the
-    agent directory. A relative value, a project's own `sessionDir` and a `--session-dir` flag all
-    depend on where Pi was started, which is not knowable here, so they leave the default.
+
+def sessions_location():
+    """Where Pi writes its sessions, and the relative setting this cannot follow: `(path, setting)`.
+
+    Pi's order of precedence is `PI_CODING_AGENT_SESSION_DIR`, else the agent settings'
+    `sessionDir`, else `sessions` in the agent directory. Pi resolves a relative value from the
+    folder each session starts in, which a collector cannot know. Then `path` is the agent
+    directory's `sessions`, which still holds what Pi wrote there, and `setting` names the value,
+    so readers say which sessions they could not count instead of passing the default off as Pi's.
+    A project's own `sessionDir` and a `--session-dir` flag are never visible here.
     """
     agent = agent_dir()[0]
+    default = agent / 'sessions'
     configured = os.environ.get('PI_CODING_AGENT_SESSION_DIR', '').strip()
+    if configured:
+        found = _absolute(configured)
+        return (found, None) if found is not None else (default, 'PI_CODING_AGENT_SESSION_DIR')
+    configured_agent = os.environ.get('PI_CODING_AGENT_DIR', '').strip()
+    if configured_agent and _absolute(configured_agent) is None:
+        # Pi's agent directory, and so its settings and default sessions, are not knowable.
+        return default, 'PI_CODING_AGENT_DIR'
+    try:
+        settings = json.loads((agent / 'settings.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        settings = None
+    value = settings.get('sessionDir') if isinstance(settings, dict) else None
+    configured = value.strip() if isinstance(value, str) else ''
     if not configured:
-        try:
-            settings = json.loads((agent / 'settings.json').read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            settings = None
-        value = settings.get('sessionDir') if isinstance(settings, dict) else None
-        configured = value.strip() if isinstance(value, str) else ''
-    return _absolute(configured) or agent / 'sessions'
+        return default, None
+    found = _absolute(configured)
+    return (found, None) if found is not None else (default, 'sessionDir')
+
+
+def sessions_dir():
+    """Where Pi writes its sessions, as far as this can follow it (`sessions_location`)."""
+    return sessions_location()[0]
+
+
+def unfollowed_note(setting):
+    """One sentence on the sessions a relative Pi `setting` keeps out of the counts."""
+    return (f"Incomplete: {UNFOLLOWED.get(setting, 'a Pi directory setting')} is relative; "
+            "sessions Pi wrote there are not counted.")
 
 
 def display(path):

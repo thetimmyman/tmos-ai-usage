@@ -9,6 +9,10 @@
 - Count Pi turns once: Command Code and OpenCode Go history that already includes Pi sessions records how many prompts came from Pi, and the activity ranking no longer adds them again.
 - Read Pi history where Pi writes it: an absolute `PI_CODING_AGENT_DIR` or `PI_CODING_AGENT_SESSION_DIR`, or the `sessionDir` setting. A forked or cloned Pi session's copied history counts once, and a Pi row dated after the collection time waits for its time instead of creating a future day.
 - Read an Antigravity transcript over 32 MiB from its most recent 32 MiB instead of its first, and say in the activity note that the history is incomplete.
+- Count only what OpenCode Go answered in OpenCode's history: prompts and replies served by other providers, local models included, are no longer charged to OpenCode Go. A v2 prompt, which names no provider, belongs to the provider of the reply that answers it.
+- Count OpenCode's reasoning tokens, as output and in the total, where OpenCode stored no total of its own.
+- Give each `agy` quota check one log file, `agy-cli.log` in the state directory, rewritten every run, instead of a new log in agy's own folder every five minutes.
+- Say when a relative Pi session directory (`PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` or `sessionDir`) keeps Pi sessions out of the counts. Pi resolves it from each session's folder, which the collector cannot know; the default directory is still read.
 - Model-group reset countdowns follow the panel's clock instead of freezing at the time the usage document was read.
 
 - Hold the whole-body read deadline during a blocking receive: each read gets only what is left of it, so a server that sends a byte and stalls can no longer stretch an 8 s read toward 16 s.
