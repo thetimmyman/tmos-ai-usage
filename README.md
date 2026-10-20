@@ -50,14 +50,18 @@ a simple usage or balance JSON at one endpoint can be added as data, without a r
 
 Antigravity requires the official `agy` CLI version 1.3.5 or newer and a saved Google
 subscription sign-in. Run `agy` interactively once, then refresh AI Usage. Quota checks
-are answered by the CLI itself without a model turn. The collapsed meters show the
+are answered by the CLI itself without a model turn, and run with the CLI's
+self-updater switched off (`AGY_CLI_DISABLE_AUTO_UPDATE=true`), so a scheduled read never
+changes the installed CLI. The collapsed meters show the
 Gemini group's limits; expand the row for each group's separate allowances and resets.
 The CLI does not report your subscription tier or fee. Confirm your actual fee in its
 provider tab for activity comparisons; no Google AI Pro price is assumed.
 
-Local activity includes `agy` called through Pi's shell tool. One canonical full
-transcript per conversation is read, with summary export fallback; chunk copies and
-duplicate step indexes are excluded. A transcript over 32 MiB is read from its most recent 32 MiB, and
+Local activity includes `agy` called through Pi's shell tool. A conversation's full and
+summary exports are both read, and each numbered step counts once. Either export can be
+truncated or left behind at a checkpoint, so neither is trusted alone. If they disagree about
+a step they both hold, only the export with more steps counts. Chunk copies are excluded.
+A transcript over 32 MiB is read from its most recent 32 MiB, and
 the activity note then says the history is incomplete. Only explicit user-input counts, dates, hashed
 conversation identities, and reported input/output counters enter the provider record.
 The private incremental scanner cache also retains source-file paths.
