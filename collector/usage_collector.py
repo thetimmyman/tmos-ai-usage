@@ -115,6 +115,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import http_guard
+import pi_activity
 
 SCHEMA_VERSION = 3
 TIMEOUT_S = 8.0
@@ -1246,11 +1247,19 @@ def _pi_usage(u: dict, model: object, when: datetime, session_id: str, stats: "_
 
 
 def _pi_contribution_for(provider: str):
-    def contribution(path: Path, now: datetime) -> dict:
+    def contribution(path: Path, now: datetime, copied: frozenset = frozenset()) -> dict:
+        """One Pi session's contribution for `provider`.
+
+        `copied` holds the IDs of the entries this session copied from a scanned ancestor when it
+        was forked or cloned: the ancestor counts them, so here they only say which model is in
+        use. A row dated after `now` waits for its time, and the result then says it must not be
+        cached, so a later refresh counts it.
+        """
         cutoff = now - timedelta(days=STATS_DAYS)
         session_id = path.stem
         stats = _Stats("")
         pending_prompts = []
+        deferred = False
         # The model in use: the latest model switch or the model that last answered. A compaction
         # or branch summary carries usage but names no model; the model in use made it.
         active: tuple = (None, None)
@@ -1271,24 +1280,37 @@ def _pi_contribution_for(provider: str):
                     if row.get("type") == "model_change":
                         active = (_pi_provider(row.get("provider")), row.get("modelId"))
                         continue
+                    inherited = isinstance(row.get("id"), str) and row["id"] in copied
                     m = row.get("message")
                     if row.get("type") != "message" and isinstance(row.get("usage"), dict):
                         # Usage that is not an assistant message (a `usage` entry, a compaction, a
                         # branch summary) still counts toward the session's tokens, per Pi's
                         # session format. It adds no prompt and leaves pending prompts in place.
+                        if inherited:
+                            continue
                         prov, model = active
                         if isinstance(row.get("provider"), str):
                             prov, model = _pi_provider(row.get("provider")), row.get("model")
                         when = _pi_time(row.get("timestamp"))
-                        if prov == provider and when is not None and when >= cutoff:
+                        if when is not None and when > now:
+                            deferred = True
+                        elif prov == provider and when is not None and when >= cutoff:
                             _pi_usage(row["usage"], model, when, session_id, stats)
                         continue
                     if row.get("type") != "message" or not isinstance(m, dict):
                         continue
                     if m.get("role") == "assistant":
                         active = (_pi_provider(m.get("provider")), m.get("model"))
+                    if inherited:
+                        continue
                     when = _pi_time(row.get("timestamp") or m.get("timestamp"))
                     if when is None or when < cutoff:
+                        continue
+                    if when > now:
+                        # The prompts this reply answered wait with it.
+                        deferred = True
+                        if m.get("role") == "assistant":
+                            pending_prompts = []
                         continue
                     role = m.get("role")
                     if role == "user":
@@ -1302,9 +1324,21 @@ def _pi_contribution_for(provider: str):
                         pending_prompts = []
         except OSError:
             pass
-        return {"days": stats.days, "models": stats.models}
+        return {"days": stats.days, "models": stats.models, "cacheable": not deferred}
 
     return contribution
+
+
+def _pi_source() -> str:
+    """The Pi session directory as a source label."""
+    return pi_activity.display(pi_activity.sessions_dir())
+
+
+def _resolved_path(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return str(path)
 
 
 def _pi_share(pi_parts: list[dict], now: datetime) -> dict:
@@ -1329,8 +1363,13 @@ def _scan_pi_transcripts(
     state_dir: Path | None = None,
     base: Path | None = None,
 ) -> tuple[list[dict], dict]:
-    """Scan Pi coding agent session files for tokens/prompts attributed to provider."""
-    base = base or Path(os.path.expanduser("~/.pi/agent/sessions"))
+    """Scan Pi coding agent session files for tokens/prompts attributed to provider.
+
+    The files are where Pi writes them (`pi_activity.sessions_dir`). A forked or cloned session's
+    copies of a scanned ancestor's entries count once, in the ancestor, so a cached contribution
+    also depends on which of its ancestors are scanned and on their files.
+    """
+    base = base or pi_activity.sessions_dir()
     if not base.is_dir():
         return [], {"files_scanned": 0, "files_cached": 0}
     cache = _load_stats_cache(state_dir)
@@ -1341,27 +1380,37 @@ def _scan_pi_transcripts(
     scanned = cached = 0
     contribution_fn = _pi_contribution_for(provider)
     prefix = f"pi:{provider}:"
-    for path in _recent_files(base, "*.jsonl", cutoff):
+    files = _recent_files(base, "*.jsonl", cutoff)
+    lineage = pi_activity.Lineage(files)
+    for path in files:
         key = prefix + str(path)
         seen.add(key)
         try:
             info = path.stat()
         except OSError:
             continue
+        ancestors = lineage.ancestors(path)
+        signature = "|".join(f"{_resolved_path(a)}:{_stat_signature([a])}" for a in ancestors)
         hit = entries.get(key)
         if (
             isinstance(hit, dict)
             and hit.get("size") == info.st_size
             and hit.get("mtime") == info.st_mtime
+            and hit.get("ancestors") == signature
         ):
             out.append(hit)
             cached += 1
             continue
-        raw = contribution_fn(path, now)
+        raw = contribution_fn(path, now, lineage.inherited(ancestors))
         fresh = _json_safe(raw)
         fresh["size"] = info.st_size
         fresh["mtime"] = info.st_mtime
-        entries[key] = fresh
+        fresh["ancestors"] = signature
+        # A contribution holding a future-dated row is recounted at the next refresh.
+        if raw.get("cacheable", True):
+            entries[key] = fresh
+        else:
+            entries.pop(key, None)
         out.append(fresh)
         scanned += 1
     for key in [k for k in entries if k.startswith(prefix) and k not in seen]:
@@ -1459,7 +1508,7 @@ def scan_command_code_stats(
             }
             pi_included = True
     stats = _absorb(parts, now)
-    stats.source = "~/.commandcode/projects" + (" + ~/.pi/agent/sessions" if pi_included else "")
+    stats.source = "~/.commandcode/projects" + (" + " + _pi_source() if pi_included else "")
     stats.scan = scan
     return stats.finish(now)
 
@@ -1607,7 +1656,7 @@ def scan_opencode_stats(
             pi_parts, pi_scan = _scan_pi_transcripts("opencode-go", now, state_dir)
             if pi_parts:
                 stats = _absorb(pi_parts, now)
-                stats.source = "~/.pi/agent/sessions"
+                stats.source = _pi_source()
                 stats.scan = {**pi_scan, **_pi_share(pi_parts, now)}
                 return stats.finish(now)
         return _no_stats(
@@ -1642,7 +1691,7 @@ def scan_opencode_stats(
             pi_included = True
     stats = _absorb(parts, now)
     stats.source = "~/.local/share/opencode/opencode.db" + (
-        " + ~/.pi/agent/sessions" if pi_included else ""
+        " + " + _pi_source() if pi_included else ""
     )
     stats.scan = scan
     return stats.finish(now)
@@ -1897,7 +1946,8 @@ BUILTIN_SOURCES = {
         "https://api.commandcode.ai/alpha/billing/credits ($COMMAND_CODE_API_BASE overrides it)",
     ),
     "opencode-go": (
-        "$OPENCODE_GO_API_KEY or ~/secrets/opencode-go.env, else ~/.local/share/opencode/auth.json or ~/.pi/agent/auth.json",
+        "$OPENCODE_GO_API_KEY or ~/secrets/opencode-go.env, else ~/.local/share/opencode/auth.json or Pi's "
+        "~/.pi/agent/auth.json (an absolute $PI_CODING_AGENT_DIR replaces ~/.pi/agent)",
         "https://opencode.ai/zen/go/v1/usage ($OPENCODE_GO_BASE overrides it)",
     ),
 }
@@ -2659,8 +2709,9 @@ def collect_opencode() -> dict:
             entry = auth.get("opencode-go")
             if isinstance(entry, dict):
                 key = entry.get("key")
+    pi_auth_path = pi_activity.agent_dir()[0] / "auth.json"
     if not key:
-        pi_auth = read_json(Path(os.path.expanduser("~/.pi/agent/auth.json")))
+        pi_auth = read_json(pi_auth_path)
         if isinstance(pi_auth, dict):
             entry = pi_auth.get("opencode-go")
             if isinstance(entry, dict):
@@ -2668,8 +2719,8 @@ def collect_opencode() -> dict:
     if not key:
         return unknown(
             "opencode-go",
-            "no opencode-go key in ~/secrets/opencode-go.env, ~/.local/share/opencode/auth.json, or ~/.pi/agent/auth.json; "
-            "run `opencode auth login`",
+            "no opencode-go key in ~/secrets/opencode-go.env, ~/.local/share/opencode/auth.json, or "
+            f"{pi_activity.display(pi_auth_path)}; run `opencode auth login`",
             status="unauthenticated",
         )
     base = os.environ.get("OPENCODE_GO_BASE", "https://opencode.ai/zen/go/v1")

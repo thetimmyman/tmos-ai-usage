@@ -137,7 +137,7 @@ def attach(document, directory, now=None):
                 turns = (turns or 0) + pi_counts['turns']
             cli_turns = total.get('prompts') if stats.get('available') else None
             sessions = (total.get('sessions') or 0) + pi_counts.get('sessions', 0) if stats.get('available') or pi_counts else None
-            source = str(stats.get('source') or '') + (' + ~/.pi/agent/sessions' if pi_counts.get('turns') else '')
+            source = str(stats.get('source') or '') + (' + ' + pi_activity.display(pi_activity.sessions_dir()) if pi_counts.get('turns') else '')
         row['activity'] = {'observed_turns': turns,
                            'pi_turns': pi_turns,
                            'cli_turns': cli_turns, 'observed_sessions': sessions,

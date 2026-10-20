@@ -159,17 +159,25 @@ def _is_anchor(path):
     return newest is not None and newest[1] == path
 
 
-def _merge(exports):
+def _merge(exports, parse):
     """One conversation's steps from its exports' steps, each step counted once.
 
-    The exports number the same steps, so a step either one holds is counted, from the full
-    export's copy when both hold it. If they disagree about a step they both hold, their numbering
-    has diverged: only the export holding more steps is counted, so nothing is counted twice.
+    `exports` holds each export's steps and its file's mtime, the full export first. The exports
+    number the same steps, so a step either one holds is counted, from the full export's copy when
+    both hold it. If they disagree about a step they both hold, their numbering has diverged and
+    only one export is counted, so nothing is counted twice: the one holding more steps, and on a
+    tie the more recent one, whose newest step is the latest, then whose file was written last.
+    `parse` reads a step's `created_at`.
     """
+    def standing(export):
+        steps, mtime = export
+        times = [when.timestamp() for when in (parse(step[2]) for step in steps.values()) if when]
+        return len(steps), max(times, default=-math.inf), mtime
+
     merged = {}
-    for steps in exports:
+    for steps, _ in exports:
         if any(merged[i][:3] != step[:3] for i, step in steps.items() if i in merged):
-            return max(exports, key=len)
+            return max(exports, key=standing)[0]
         for i, step in steps.items():
             merged.setdefault(i, step)
     return merged
@@ -185,9 +193,13 @@ def _contribution(c, path, now):
     for export in _exports(path.parent):
         steps, cut = _read_steps(export)
         if steps is not None:
-            exports.append(steps)
+            try:
+                mtime = export.stat().st_mtime
+            except OSError:
+                mtime = -math.inf
+            exports.append((steps, mtime))
             partial = partial or cut
-    for _, (kind, source, created, incoming, outgoing) in sorted(_merge(exports).items()):
+    for _, (kind, source, created, incoming, outgoing) in sorted(_merge(exports, c._parse_iso).items()):
         when = c._parse_iso(created)
         if when and when > now:
             cacheable = False

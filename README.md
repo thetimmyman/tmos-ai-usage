@@ -60,7 +60,8 @@ provider tab for activity comparisons; no Google AI Pro price is assumed.
 Local activity includes `agy` called through Pi's shell tool. A conversation's full and
 summary exports are both read, and each numbered step counts once. Either export can be
 truncated or left behind at a checkpoint, so neither is trusted alone. If they disagree about
-a step they both hold, only the export with more steps counts. Chunk copies are excluded.
+a step they both hold, only one export counts: the one with more steps, and on a tie the one whose
+newest step is the latest, then the one written last. Chunk copies are excluded.
 A transcript over 32 MiB is read from its most recent 32 MiB, and
 the activity note then says the history is incomplete. Only explicit user-input counts, dates, hashed
 conversation identities, and reported input/output counters enter the provider record.

@@ -10,6 +10,8 @@ import shutil
 import stat
 import tempfile
 
+import pi_activity
+
 
 SCHEMA_VERSION = 1
 MAX_SETUP_BYTES = 64 * 1024
@@ -123,13 +125,8 @@ def _task_destination() -> Path:
 
 
 def _pi_agent_dir() -> tuple[Path, str]:
-    configured = os.environ.get("PI_CODING_AGENT_DIR", "").strip()
-    if configured:
-        candidate = Path(configured).expanduser()
-        if candidate.is_absolute():
-            return candidate, "using configured absolute Pi agent directory"
-        return Path.home() / ".pi" / "agent", "PI_CODING_AGENT_DIR is not absolute; using the default Pi agent directory"
-    return Path.home() / ".pi" / "agent", "using the default Pi agent directory"
+    # The collectors read Pi history from the same directory, so the rule lives in one place.
+    return pi_activity.agent_dir()
 
 
 def _pi_destination() -> tuple[Path, str]:

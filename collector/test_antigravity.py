@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import usage_collector as c
+import pi_activity
 import subscription_value
 
 
@@ -440,6 +442,146 @@ class SecondReviewTest(unittest.TestCase):
         self.assertEqual(stats["scan"]["pi_prompts"], 1)
         model = next(row for row in stats["models"] if row["id"] == "m1")
         self.assertEqual((model["total_tokens"], model["cache_read_tokens"]), (165, 50))
+
+
+@contextlib.contextmanager
+def _pi_env(home, **configured):
+    """HOME set to `home`, and the Pi directory variables exactly as given (unset otherwise)."""
+    with patch.dict(os.environ, {"HOME": str(home), **configured}):
+        for name in ("PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR"):
+            if name not in configured:
+                os.environ.pop(name, None)
+        yield
+
+
+def _pi_file(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return path
+
+
+def _pi_turn(n, when, tokens):
+    """A prompt and its Command Code reply, as Pi writes them: entries with IDs."""
+    at = when.isoformat()
+    return [{"type": "message", "id": f"u{n}", "timestamp": at, "message": {"role": "user", "content": "x"}},
+            {"type": "message", "id": f"a{n}", "timestamp": at, "message": {
+                "role": "assistant", "provider": "commandcode", "model": "cc/m1",
+                "usage": {"input": tokens, "totalTokens": tokens}}}]
+
+
+class ThirdReviewTest(unittest.TestCase):
+    def test_divergent_exports_holding_as_many_steps_count_the_more_recent(self):
+        first, second = NOW - timedelta(hours=2), NOW - timedelta(hours=1)
+        stale = [_prompt(0, first), _reply(1, first, 100, 20)]
+        recent = [_prompt(0, second), _reply(1, second, 7, 3)]
+        for full, short in ((stale, recent), (recent, stale)):
+            with self.subTest(full_export_is_stale=full is stale), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / "brain"
+                stamps = tuple((first if rows is stale else second).timestamp() for rows in (full, short))
+                _conversation(root, "conversation", full, short, stamps)
+                stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+                self.assertEqual((stats["totals"]["prompts"], stats["totals"]["tokens"]), (1, 10))
+
+    def test_divergent_exports_with_the_same_newest_step_count_the_one_written_last(self):
+        at = NOW - timedelta(hours=1)
+        full = [_prompt(0, at), _reply(1, at, 100, 20)]
+        short = [_prompt(0, at), _reply(1, at - timedelta(minutes=5), 7, 3)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "brain"
+            _conversation(root, "conversation", full, short, (at.timestamp(), NOW.timestamp()))
+            stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+        self.assertEqual(stats["totals"]["tokens"], 10)
+
+    def test_pi_history_is_read_from_the_configured_agent_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            _pi_file(home / "worker/sessions/--project--/s.jsonl", [{"type": "session", "id": "w"}] + _pi_turn(1, NOW, 15))
+            # The default directory is not Pi's while another one is configured.
+            _pi_file(home / ".pi/agent/sessions/--project--/d.jsonl", [{"type": "session", "id": "d"}] + _pi_turn(2, NOW, 99))
+            with _pi_env(home, PI_CODING_AGENT_DIR=str(home / "worker")):
+                stats = c.scan_command_code_stats(NOW, None, home / "state")
+                turns = pi_activity.scan(now=NOW)
+        self.assertEqual((stats["totals"]["prompts"], stats["totals"]["tokens"]), (1, 15))
+        self.assertEqual(stats["source"], "~/.commandcode/projects + ~/worker/sessions")
+        self.assertEqual(turns, {"command-code": {"turns": 1, "sessions": 1}})
+
+    def test_pi_session_directory_follows_pis_own_precedence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            agent = home / "worker"
+            agent.mkdir()
+            (agent / "settings.json").write_text(json.dumps({"sessionDir": "~/from-settings"}))
+            cases = (
+                ({"PI_CODING_AGENT_SESSION_DIR": str(home / "from-env")}, home / "from-env"),
+                ({"PI_CODING_AGENT_SESSION_DIR": "~/from-env"}, home / "from-env"),
+                ({}, home / "from-settings"),
+                # Pi resolves a relative value from where it was started, which is not knowable here.
+                ({"PI_CODING_AGENT_SESSION_DIR": "relative"}, agent / "sessions"),
+            )
+            for extra, expected in cases:
+                with self.subTest(extra=extra), _pi_env(home, PI_CODING_AGENT_DIR=str(agent), **extra):
+                    self.assertEqual(pi_activity.sessions_dir(), expected)
+            (agent / "settings.json").write_text(json.dumps({"sessionDir": "relative"}))
+            with _pi_env(home, PI_CODING_AGENT_DIR=str(agent)):
+                self.assertEqual(pi_activity.sessions_dir(), agent / "sessions")
+            with _pi_env(home):
+                self.assertEqual(pi_activity.sessions_dir(), home / ".pi/agent/sessions")
+
+    def test_opencode_go_key_is_read_from_the_configured_pi_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            agent = home / "worker"
+            agent.mkdir()
+            (agent / "auth.json").write_text(json.dumps({"opencode-go": {"key": "synthetic-key"}}))
+            keys = []
+            with _pi_env(home, PI_CODING_AGENT_DIR=str(agent)), \
+                    patch("usage_collector.http_json", side_effect=lambda url, key: keys.append(key) or {}), \
+                    patch("usage_collector.parse_opencode", return_value={"provider": "opencode-go"}):
+                os.environ.pop("OPENCODE_GO_API_KEY", None)
+                c.collect_opencode()
+        self.assertEqual(keys, ["synthetic-key"])
+
+    def test_future_dated_pi_rows_wait_for_their_time_and_are_never_cached(self):
+        later = NOW + timedelta(days=1)
+        rows = [{"type": "session", "id": "s"}] + _pi_turn(1, NOW, 15) + _pi_turn(2, later, 20) + [
+            {"type": "usage", "id": "w1", "kind": "cache_warm", "timestamp": later.isoformat(),
+             "provider": "commandcode", "model": "cc/m1", "usage": {"cacheRead": 5, "totalTokens": 5}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            _pi_file(home / ".pi/agent/sessions/--project--/s.jsonl", rows)
+            with _pi_env(home):
+                first = c.scan_command_code_stats(NOW, None, home / "state")
+                again = c.scan_command_code_stats(NOW, None, home / "state")
+                after = c.scan_command_code_stats(later + timedelta(minutes=1), None, home / "state")
+        self.assertEqual((first["totals"]["prompts"], first["totals"]["tokens"]), (1, 15))
+        self.assertEqual([row["date"] for row in first["daily"]], [NOW.date().isoformat()])
+        self.assertEqual((again["scan"]["files_scanned"], again["scan"]["files_cached"]), (1, 0))
+        self.assertEqual((after["totals"]["prompts"], after["totals"]["tokens"]), (2, 40))
+
+    def test_a_forked_pi_session_counts_the_history_it_copied_once(self):
+        first, second, third = (NOW - timedelta(hours=h) for h in (3, 2, 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            sessions = home / ".pi/agent/sessions/--project--"
+            # /fork and /clone copy the parent's entries, IDs and timestamps included, and name the
+            # parent file in the new header.
+            parent = _pi_file(sessions / "p.jsonl", [{"type": "session", "id": "p"}] + _pi_turn(1, first, 15))
+            child = _pi_file(sessions / "c.jsonl", [{"type": "session", "id": "c", "parentSession": str(parent)}]
+                             + _pi_turn(1, first, 15) + _pi_turn(2, second, 20))
+            _pi_file(sessions / "g.jsonl", [{"type": "session", "id": "g", "parentSession": str(child)}]
+                     + _pi_turn(1, first, 15) + _pi_turn(2, second, 20) + _pi_turn(3, third, 25))
+            with _pi_env(home):
+                stats = c.scan_command_code_stats(NOW, None, home / "state")
+                turns = pi_activity.scan(now=NOW)
+                parent.unlink()
+                orphaned = c.scan_command_code_stats(NOW, None, home / "state")
+                orphaned_turns = pi_activity.scan(now=NOW)
+        self.assertEqual((stats["totals"]["prompts"], stats["totals"]["tokens"]), (3, 60))
+        self.assertEqual(stats["scan"]["pi_prompts"], 3)
+        self.assertEqual(turns, {"command-code": {"turns": 3, "sessions": 3}})
+        # With the parent gone, the child's copies are the only ones left, and they count.
+        self.assertEqual((orphaned["totals"]["prompts"], orphaned["totals"]["tokens"]), (3, 60))
+        self.assertEqual(orphaned_turns, {"command-code": {"turns": 3, "sessions": 2}})
 
 
 if __name__ == "__main__":

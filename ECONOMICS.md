@@ -7,9 +7,13 @@ in the collector's 30-day window / monthly subscription fee**. It does not mean
 best task quality or lowest cost per accepted task. Sparse logs and activity in
 other harnesses can materially change this order; this is not a buying recommendation.
 
-Native CLI transcripts and `~/.pi/agent/sessions` contribute turns. Pi turns are
-attributed to the first assistant provider following a user message, deduplicated
-by session/entry identity; generic API providers are not assigned to subscriptions.
+Native CLI transcripts and Pi's session directory contribute turns. That is
+`~/.pi/agent/sessions`, or where Pi is configured to write sessions: an absolute
+`PI_CODING_AGENT_SESSION_DIR`, the agent settings' `sessionDir`, or `sessions` under an
+absolute `PI_CODING_AGENT_DIR`. Pi turns are attributed to the first assistant provider
+following a user message, deduplicated by session/entry identity; generic API providers are
+not assigned to subscriptions. A forked or cloned session's copied history counts once, in
+the session it was copied from, and a row dated after the collection time waits for it.
 Ephemeral `--no-session` workers and other machines are not covered.
 An optional [Pi observer](integration/pi/README.md) also captures new persisted
 assistant-response metadata into pending provider-session segments. These are

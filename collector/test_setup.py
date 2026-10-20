@@ -211,5 +211,14 @@ class SetupTests(unittest.TestCase):
         self.assertIn("not absolute", reason)
 
 
+    def test_setup_and_the_collectors_agree_on_the_pi_agent_directory(self):
+        import pi_activity
+        home = self.tmp_path / "home"
+        self.set_home(home)
+        for value in (str(self.tmp_path / "agent"), "~/tilde-agent", "relative-agent", ""):
+            with self.subTest(value=value):
+                self.set_env(PI_CODING_AGENT_DIR=value)
+                self.assertEqual(onboarding._pi_agent_dir(), pi_activity.agent_dir())
+
 if __name__ == "__main__":
     unittest.main()
