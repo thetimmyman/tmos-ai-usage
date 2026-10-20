@@ -301,5 +301,146 @@ class ReviewFindingsTest(unittest.TestCase):
         self.assertEqual((activity["observed_turns"], activity["pi_turns"], activity["cli_turns"]), (1, 1, 0))
 
 
+def _conversation(root, name, full=None, short=None, mtimes=(None, None)):
+    """Write a conversation's exports (None leaves one as it is) and, optionally, their mtimes."""
+    logs = root / name / ".system_generated" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    for file, rows, mtime in (("transcript_full.jsonl", full, mtimes[0]), ("transcript.jsonl", short, mtimes[1])):
+        if rows is None:
+            continue
+        (logs / file).write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        if mtime is not None:
+            os.utime(logs / file, (mtime, mtime))
+
+
+def _prompt(step, when):
+    return {"step_index": step, "type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE",
+            "created_at": when.isoformat()}
+
+
+def _reply(step, when, incoming, outgoing):
+    return {"step_index": step, "type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE",
+            "created_at": when.isoformat(), "input_tokens": incoming, "output_tokens": outgoing}
+
+
+class SecondReviewTest(unittest.TestCase):
+    def test_steps_only_the_short_export_still_holds_are_counted(self):
+        # The full export stopped at a checkpoint and the short export carried on: both are read,
+        # and the steps they share are counted once.
+        early = NOW - timedelta(hours=1)
+        full = [_prompt(0, early), _reply(1, early, 100, 20)]
+        short = full + [_prompt(2, NOW), _reply(3, NOW, 50, 10)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "brain"
+            _conversation(root, "conversation", full, short, (early.timestamp(), NOW.timestamp()))
+            stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+        self.assertEqual(stats["totals"]["prompts"], 2)
+        self.assertEqual(stats["totals"]["tokens"], 180)
+        self.assertEqual(stats["totals"]["sessions"], 1)
+
+    def test_a_conversation_whose_full_export_went_stale_stays_in_the_window(self):
+        old = NOW - timedelta(days=40)
+        full = [_prompt(0, old), _reply(1, old, 100, 20)]
+        short = full + [_prompt(2, NOW), _reply(3, NOW, 50, 10)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "brain"
+            _conversation(root, "conversation", full, short, (old.timestamp(), NOW.timestamp()))
+            stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+        self.assertTrue(stats["available"])
+        self.assertEqual(stats["totals"]["prompts"], 1)
+        self.assertEqual(stats["totals"]["tokens"], 60)
+
+    def test_exports_that_number_steps_differently_are_not_added_together(self):
+        # A rewrite renumbered the short export: its step 0 is not the full export's step 0. Adding
+        # the two would count steps twice, so only the export holding more steps is counted.
+        first, second = NOW - timedelta(hours=2), NOW - timedelta(hours=1)
+        full = [_prompt(0, first), _reply(1, first, 100, 20)]
+        short = [_prompt(0, second), _reply(1, second, 7, 3), _prompt(2, NOW), _reply(3, NOW, 50, 10)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "brain"
+            _conversation(root, "conversation", full, short, (NOW.timestamp(), NOW.timestamp()))
+            stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+        self.assertEqual(stats["totals"]["prompts"], 2)
+        self.assertEqual(stats["totals"]["tokens"], 70)
+
+    def test_duplicate_exports_never_take_places_under_the_file_cap(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("usage_collector.STATS_MAX_FILES", 2):
+            root = Path(tmp) / "brain"
+            for age, name in enumerate(("newest", "middle", "oldest")):
+                rows = [_prompt(0, NOW - timedelta(hours=age))]
+                stamp = NOW.timestamp() - age * 3600
+                _conversation(root, name, rows, rows, (stamp, stamp))
+            stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+        self.assertEqual(stats["totals"]["sessions"], 2)
+        self.assertEqual(stats["totals"]["prompts"], 2)
+        self.assertEqual(stats["scan"]["files_scanned"], 2)
+
+    def test_a_change_to_the_other_export_refreshes_the_cache(self):
+        stamp = NOW.timestamp()
+        rows = [_prompt(0, NOW)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root, state = Path(tmp) / "brain", Path(tmp) / "state"
+            _conversation(root, "conversation", rows, rows, (stamp, stamp - 60))
+            first = c.scan_antigravity_stats(NOW, root, state)
+            # The short export gains a reply while the full export stays the newest file.
+            _conversation(root, "conversation", None, rows + [_reply(1, NOW, 50, 10)], (None, stamp - 30))
+            second = c.scan_antigravity_stats(NOW, root, state)
+        self.assertEqual(first["totals"]["tokens"], 0)
+        self.assertEqual(second["totals"]["tokens"], 60)
+        self.assertEqual(second["scan"]["files_scanned"], 1)
+
+    def test_agy_runs_with_its_self_updater_switched_off(self):
+        import agy_usage
+        envs = []
+        with patch("agy_usage.shutil.which", return_value="/mock/agy"), \
+                patch("agy_usage.subprocess.run") as run, \
+                patch.dict(os.environ, {"AGY_CLI_DISABLE_AUTO_UPDATE": "false", "TMOS_SYNTHETIC_ENV": "kept"}):
+            def output(args, **kwargs):
+                envs.append(kwargs.get("env"))
+                kwargs["stdout"].write(b"1.3.5\n" if "--version" in args else json.dumps(quota()).encode())
+                return type("Result", (), {"returncode": 0})()
+            run.side_effect = output
+            self.assertEqual(agy_usage.cli_json()["status"], "SUCCESS")
+        self.assertEqual(len(envs), 2)
+        for env in envs:
+            self.assertEqual(env["AGY_CLI_DISABLE_AUTO_UPDATE"], "true")
+            self.assertEqual(env["TMOS_SYNTHETIC_ENV"], "kept")
+
+    def test_pi_usage_outside_assistant_messages_counts_toward_tokens(self):
+        at = NOW.isoformat()
+        rows = [
+            {"type": "session", "id": "pi-session"},
+            {"type": "model_change", "timestamp": at, "provider": "commandcode", "modelId": "cc/m1"},
+            {"type": "message", "timestamp": at, "message": {"role": "user", "content": "x"}},
+            {"type": "message", "timestamp": at, "message": {
+                "role": "assistant", "provider": "commandcode", "model": "cc/m1",
+                "usage": {"input": 10, "output": 5, "totalTokens": 15}}},
+            # A compaction names no model: the model in use made it.
+            {"type": "compaction", "timestamp": at, "summary": "s", "firstKeptEntryId": "a",
+             "usage": {"input": 90, "output": 10, "totalTokens": 100}},
+            # A usage entry names its own model, whatever is in use.
+            {"type": "usage", "kind": "cache_warm", "timestamp": at, "provider": "commandcode", "model": "cc/m1",
+             "usage": {"input": 0, "output": 0, "cacheRead": 50, "cacheWrite": 0, "totalTokens": 50}},
+            {"type": "usage", "kind": "cache_warm", "timestamp": at, "provider": "openrouter", "model": "x/y",
+             "usage": {"input": 1000, "totalTokens": 1000}},
+            # After a switch to another provider, a compaction is that provider's.
+            {"type": "model_change", "timestamp": at, "provider": "openrouter", "modelId": "x/y"},
+            {"type": "branch_summary", "timestamp": at, "fromId": "b", "summary": "s",
+             "usage": {"input": 7, "totalTokens": 7}},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            sessions = home / ".pi/agent/sessions/project"
+            sessions.mkdir(parents=True)
+            (sessions / "s.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                stats = c.scan_command_code_stats(NOW, None, home / "state")
+        self.assertEqual(stats["totals"]["tokens"], 165)
+        self.assertEqual(stats["totals"]["prompts"], 1)
+        self.assertEqual(stats["scan"]["pi_prompts"], 1)
+        model = next(row for row in stats["models"] if row["id"] == "m1")
+        self.assertEqual((model["total_tokens"], model["cache_read_tokens"]), (165, 50))
+
+
 if __name__ == "__main__":
     unittest.main()

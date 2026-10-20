@@ -26,10 +26,13 @@ class CliError(ValueError):
 
 def _run(args, timeout):
     # File-backed output keeps subprocess diagnostics out of logs and memory bounded.
+    # agy's self-updater runs in the background of any invocation. A read-only monitor must never
+    # let a scheduled quota check replace the installed CLI, so the child runs with it switched off.
+    env = {**os.environ, "AGY_CLI_DISABLE_AUTO_UPDATE": "true"}
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as diagnostic:
         try:
             result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=output,
-                                    stderr=diagnostic, timeout=timeout, check=False)
+                                    stderr=diagnostic, timeout=timeout, check=False, env=env)
         except subprocess.TimeoutExpired as exc:
             raise CliError("timeout") from exc
         except OSError as exc:
@@ -126,12 +129,89 @@ def collect(c):
                          source="cli", status="unauthenticated" if str(exc) == "unauthenticated" else "unknown")
 
 
+# A conversation keeps two exports of the same numbered steps. Neither is canonical: either can be
+# truncated or left behind at a checkpoint, so the reader merges them by step number.
+TRANSCRIPTS = ("transcript_full.jsonl", "transcript.jsonl")
+
+
+def _exports(logs):
+    """The conversation's exports that exist, the full export first."""
+    return [logs / name for name in TRANSCRIPTS if (logs / name).is_file()]
+
+
+def _is_anchor(path):
+    """Whether `path` stands for its conversation in the scan: its most recently written export.
+
+    One file per conversation enters the scan, before the file cap applies, so duplicate exports
+    never take a place. The newest export carries the conversation's last activity, which is what
+    the 30-day window has to see. On a tie, the full export stands.
+    """
+    if path.name not in TRANSCRIPTS:
+        return False
+    newest = None
+    for export in _exports(path.parent):
+        try:
+            mtime = export.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or mtime > newest[0]:
+            newest = (mtime, export)
+    return newest is not None and newest[1] == path
+
+
+def _merge(exports):
+    """One conversation's steps from its exports' steps, each step counted once.
+
+    The exports number the same steps, so a step either one holds is counted, from the full
+    export's copy when both hold it. If they disagree about a step they both hold, their numbering
+    has diverged: only the export holding more steps is counted, so nothing is counted twice.
+    """
+    merged = {}
+    for steps in exports:
+        if any(merged[i][:3] != step[:3] for i, step in steps.items() if i in merged):
+            return max(exports, key=len)
+        for i, step in steps.items():
+            merged.setdefault(i, step)
+    return merged
+
+
 def _contribution(c, path, now):
     stats = c._Stats("")
     session = hashlib.sha256(str(path.parents[2]).encode()).hexdigest()
     cutoff = now - timedelta(days=c.STATS_DAYS)
-    seen = set()
     cacheable = True
+    partial = False
+    exports = []
+    for export in _exports(path.parent):
+        steps, cut = _read_steps(export)
+        if steps is not None:
+            exports.append(steps)
+            partial = partial or cut
+    for _, (kind, source, created, incoming, outgoing) in sorted(_merge(exports).items()):
+        when = c._parse_iso(created)
+        if when and when > now:
+            cacheable = False
+            continue
+        if not when or when < cutoff:
+            continue
+        if kind == "USER_INPUT" and source == "USER_EXPLICIT":
+            stats.add_prompt(when, session)
+        elif kind == "PLANNER_RESPONSE" and source == "MODEL":
+            if type(incoming) is not int or type(outgoing) is not int or min(incoming, outgoing) < 0:
+                continue
+            bucket = c._blank_bucket()
+            bucket.update(input_tokens=incoming, output_tokens=outgoing, total_tokens=incoming + outgoing)
+            stats.add_tokens(when, session, None, bucket, bucket["total_tokens"])
+    return {"days": stats.days, "models": stats.models, "cacheable": cacheable, "partial": partial}
+
+
+def _read_steps(path):
+    """One export's DONE steps by step number, and whether the size bound cut the file.
+
+    Only what the counts need is kept: never content, thinking or tool calls. An unreadable
+    export yields None.
+    """
+    steps = {}
     partial = False
     try:
         with path.open("rb") as stream:
@@ -167,28 +247,13 @@ def _contribution(c, path, now):
                 if not isinstance(row, dict) or row.get("status") != "DONE":
                     continue
                 step = row.get("step_index")
-                if type(step) is not int or step < 0 or step in seen:
+                if type(step) is not int or step < 0 or step in steps:
                     continue
-                when = c._parse_iso(row.get("created_at"))
-                if when and when > now:
-                    cacheable = False
-                    continue
-                if not when or when < cutoff:
-                    continue
-                seen.add(step)
-                if row.get("type") == "USER_INPUT" and row.get("source") == "USER_EXPLICIT":
-                    stats.add_prompt(when, session)
-                elif row.get("type") == "PLANNER_RESPONSE" and row.get("source") == "MODEL":
-                    incoming = row.get("input_tokens")
-                    outgoing = row.get("output_tokens")
-                    if type(incoming) is not int or type(outgoing) is not int or min(incoming, outgoing) < 0:
-                        continue
-                    bucket = c._blank_bucket()
-                    bucket.update(input_tokens=incoming, output_tokens=outgoing, total_tokens=incoming + outgoing)
-                    stats.add_tokens(when, session, None, bucket, bucket["total_tokens"])
+                steps[step] = (row.get("type"), row.get("source"), row.get("created_at"),
+                               row.get("input_tokens"), row.get("output_tokens"))
     except OSError:
-        pass
-    return {"days": stats.days, "models": stats.models, "cacheable": cacheable, "partial": partial}
+        return None, False
+    return steps, partial
 
 
 def scan_stats(c, now=None, root=None, state_dir=None):
@@ -197,12 +262,10 @@ def scan_stats(c, now=None, root=None, state_dir=None):
     settings = c.read_json(base.parent / "settings.json")
     if isinstance(settings, dict) and settings.get("modelProvider") == "gemini":
         return c._no_stats("", {}, "agy is configured for Gemini API billing; subscription activity is unavailable")
-    # Full export preferred; summary and chunk copies must never be counted again.
-    def include(path):
-        return path.name == "transcript_full.jsonl" or (
-            path.name == "transcript.jsonl" and not (path.parent / "transcript_full.jsonl").is_file())
+    # One anchor per conversation reads both exports; summary and chunk copies are never counted.
     parts, scanned = c._scan_transcripts(base, now, lambda p, t: _contribution(c, p, t), state_dir,
-                                         "*/.system_generated/logs/transcript*.jsonl", include=include)
+                                         "*/.system_generated/logs/transcript*.jsonl", include=_is_anchor,
+                                         siblings=lambda p: _exports(p.parent))
     partial = sum(1 for part in parts if part.get("partial"))
     stats = c._absorb(parts, now)
     stats.source = "~/.gemini/antigravity-cli/brain"

@@ -719,12 +719,15 @@ def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
 # borrows another provider's history, and a scan that finds nothing reports nothing, not zero.
 
 STATS_DAYS = 30
-STATS_CACHE_VERSION = 4
+STATS_CACHE_VERSION = 5
 STATS_MAX_FILES = 600
 
 
-def _recent_files(base: Path, pattern: str, since: float) -> list[Path]:
-    """Files under `base` matching `pattern`, newest first, bounded, never fatal."""
+def _recent_files(base: Path, pattern: str, since: float, include=None) -> list[Path]:
+    """Files under `base` matching `pattern`, newest first, bounded, never fatal.
+
+    `include` filters before the bound applies, so a file it rejects never takes a place.
+    """
     if not base.is_dir():
         return []
     found: list[tuple[float, Path]] = []
@@ -733,7 +736,7 @@ def _recent_files(base: Path, pattern: str, since: float) -> list[Path]:
             mtime = path.stat().st_mtime
         except OSError:
             continue
-        if mtime >= since:
+        if mtime >= since and (include is None or include(path)):
             found.append((mtime, path))
     found.sort(key=lambda item: item[0], reverse=True)
     return [path for _, path in found[:STATS_MAX_FILES]]
@@ -812,11 +815,14 @@ def _scan_transcripts(
     state_dir: Path | None = None,
     pattern: str = "*.jsonl",
     include=None,
+    siblings=None,
 ) -> tuple[list[dict], dict]:
     """Per-file contributions for files touched inside the window, reusing the cache.
 
     `pattern` is the file kind a provider keeps its history in: JSONL rollouts for Claude, Codex and
-    Command Code, plain JSON documents for Cline.
+    Command Code, plain JSON documents for Cline. `include` keeps only the files that stand for a
+    unit of history, before the file cap applies. `siblings` names every file a contribution reads
+    besides its own, so a change to any of them refreshes the cached contribution.
     """
     cache = _load_stats_cache(state_dir)
     entries = cache["files"]
@@ -824,20 +830,20 @@ def _scan_transcripts(
     out: list[dict] = []
     seen: set[str] = set()
     scanned = cached = 0
-    for path in _recent_files(base, pattern, cutoff):
-        if include is not None and not include(path):
-            continue
+    for path in _recent_files(base, pattern, cutoff, include):
         key = str(path)
         seen.add(key)
         try:
             info = path.stat()
         except OSError:
             continue
+        signature = _stat_signature(siblings(path)) if siblings else None
         hit = entries.get(key)
         if (
             isinstance(hit, dict)
             and hit.get("size") == info.st_size
             and hit.get("mtime") == info.st_mtime
+            and hit.get("siblings") == signature
         ):
             out.append(hit)
             cached += 1
@@ -846,6 +852,8 @@ def _scan_transcripts(
         fresh = _json_safe(raw)
         fresh["size"] = info.st_size
         fresh["mtime"] = info.st_mtime
+        if signature is not None:
+            fresh["siblings"] = signature
         if raw.get("partial"):
             fresh["partial"] = True  # the reader counted only part of the file, and says so
         # A reader may defer a future-dated row until the next refresh. Do not
@@ -1201,12 +1209,51 @@ PI_ALIASES = {
 }
 
 
+def _pi_provider(value: object) -> str | None:
+    return PI_ALIASES.get(value) if isinstance(value, str) else None
+
+
+def _pi_time(raw: object) -> datetime | None:
+    """A Pi timestamp (epoch milliseconds or ISO 8601) as an aware datetime, else None."""
+    try:
+        when = (
+            datetime.fromtimestamp(raw / 1000, timezone.utc)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+            else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        )
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+    return when if when.tzinfo is not None else None
+
+
+def _pi_usage(u: dict, model: object, when: datetime, session_id: str, stats: "_Stats") -> None:
+    """Add one Pi usage record (an assistant reply's, or a row-level entry's) to `stats`."""
+    inp = _num(u.get("input")) or 0
+    out = _num(u.get("output")) or 0
+    cr = _num(u.get("cacheRead")) or 0
+    cw = _num(u.get("cacheWrite")) or 0
+    tot = _int(_num(u.get("totalTokens")) or sum((inp, out, cr, cw)))
+    bucket = {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "cache_read_tokens": cr,
+        "cache_write_tokens": cw,
+        "total_tokens": tot,
+    }
+    if isinstance(model, str) and "/" in model:
+        model = model.split("/", 1)[1]
+    stats.add_tokens(when, session_id, model, bucket, tot)
+
+
 def _pi_contribution_for(provider: str):
     def contribution(path: Path, now: datetime) -> dict:
         cutoff = now - timedelta(days=STATS_DAYS)
         session_id = path.stem
         stats = _Stats("")
         pending_prompts = []
+        # The model in use: the latest model switch or the model that last answered. A compaction
+        # or branch summary carries usage but names no model; the model in use made it.
+        active: tuple = (None, None)
         try:
             with path.open(encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -1221,47 +1268,37 @@ def _pi_contribution_for(provider: str):
                     if row.get("type") == "session":
                         session_id = str(row.get("id") or session_id)
                         continue
+                    if row.get("type") == "model_change":
+                        active = (_pi_provider(row.get("provider")), row.get("modelId"))
+                        continue
                     m = row.get("message")
+                    if row.get("type") != "message" and isinstance(row.get("usage"), dict):
+                        # Usage that is not an assistant message (a `usage` entry, a compaction, a
+                        # branch summary) still counts toward the session's tokens, per Pi's
+                        # session format. It adds no prompt and leaves pending prompts in place.
+                        prov, model = active
+                        if isinstance(row.get("provider"), str):
+                            prov, model = _pi_provider(row.get("provider")), row.get("model")
+                        when = _pi_time(row.get("timestamp"))
+                        if prov == provider and when is not None and when >= cutoff:
+                            _pi_usage(row["usage"], model, when, session_id, stats)
+                        continue
                     if row.get("type") != "message" or not isinstance(m, dict):
                         continue
-                    raw = row.get("timestamp") or m.get("timestamp")
-                    try:
-                        when = (
-                            datetime.fromtimestamp(raw / 1000, timezone.utc)
-                            if isinstance(raw, (int, float))
-                            else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                        )
-                        if when.tzinfo is None:
-                            continue
-                    except (ValueError, TypeError, OverflowError, OSError):
-                        continue
-                    if when < cutoff:
+                    if m.get("role") == "assistant":
+                        active = (_pi_provider(m.get("provider")), m.get("model"))
+                    when = _pi_time(row.get("timestamp") or m.get("timestamp"))
+                    if when is None or when < cutoff:
                         continue
                     role = m.get("role")
                     if role == "user":
                         pending_prompts.append(when)
                     elif role == "assistant":
-                        prov = PI_ALIASES.get(m.get("provider"))
-                        if prov == provider:
+                        if _pi_provider(m.get("provider")) == provider:
                             for pw in pending_prompts:
                                 stats.add_prompt(pw, session_id)
-                            u = m.get("usage") or {}
-                            inp = _num(u.get("input")) or 0
-                            out = _num(u.get("output")) or 0
-                            cr = _num(u.get("cacheRead")) or 0
-                            cw = _num(u.get("cacheWrite")) or 0
-                            tot = _int(_num(u.get("totalTokens")) or sum((inp, out, cr, cw)))
-                            bucket = {
-                                "input_tokens": inp,
-                                "output_tokens": out,
-                                "cache_read_tokens": cr,
-                                "cache_write_tokens": cw,
-                                "total_tokens": tot,
-                            }
-                            model = m.get("model")
-                            if isinstance(model, str) and "/" in model:
-                                model = model.split("/", 1)[1]
-                            stats.add_tokens(when, session_id, model, bucket, tot)
+                            u = m.get("usage")
+                            _pi_usage(u if isinstance(u, dict) else {}, m.get("model"), when, session_id, stats)
                         pending_prompts = []
         except OSError:
             pass
