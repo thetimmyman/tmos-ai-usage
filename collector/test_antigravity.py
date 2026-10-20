@@ -591,19 +591,22 @@ def _opencode_db(path, v2=(), v1=()):
     """An OpenCode database laid out as OpenCode writes it, rows inserted last first.
 
     `v2` rows are `(session, seq, type, data)`; `v1` rows are `(session, data)`, written in the
-    same millisecond with ids in the order given. Reading in insertion order would be wrong.
+    same millisecond (NOW, or a time given last) with ids in the order given. Reading in insertion
+    order would be wrong.
     """
     con = sqlite3.connect(path)
     con.execute("CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, "
                 "time_updated integer NOT NULL, data text NOT NULL)")
     con.execute("CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, "
                 "seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)")
-    ms = int(NOW.timestamp() * 1000)
-    for n, (session, seq, kind, data) in reversed(list(enumerate(v2))):
+    def ms(rest):
+        return int((rest[0] if rest else NOW).timestamp() * 1000)
+    for n, (session, seq, kind, data, *rest) in reversed(list(enumerate(v2))):
         con.execute("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (f"v2-{n:03d}", session, kind, seq, ms, ms, json.dumps(data)))
-    for n, (session, data) in reversed(list(enumerate(v1))):
-        con.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)", (f"v1-{n:03d}", session, ms, ms, json.dumps(data)))
+                    (f"v2-{n:03d}", session, kind, seq, ms(rest), ms(rest), json.dumps(data)))
+    for n, (session, data, *rest) in reversed(list(enumerate(v1))):
+        con.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                    (f"v1-{n:03d}", session, ms(rest), ms(rest), json.dumps(data)))
     con.commit()
     con.close()
     return path
@@ -692,7 +695,7 @@ class FourthReviewTest(unittest.TestCase):
             self.assertFalse(spare.parent.exists())
         self.assertEqual(calls[0][1:7], ["-p", "/usage", "--output-format", "json", "--print-timeout", "15s"])
 
-    def test_an_agy_without_the_log_file_flag_still_reports_quota(self):
+    def test_an_agy_without_the_log_file_flag_is_never_run_without_one(self):
         import agy_usage
         calls = []
 
@@ -704,13 +707,18 @@ class FourthReviewTest(unittest.TestCase):
             if "--log-file" in args:  # what Go's flag package says about a flag it does not know
                 kwargs["stderr"].write(b"flag provided but not defined: -log-file\nUsage of agy:\n")
                 return type("Result", (), {"returncode": 2})()
-            kwargs["stdout"].write(json.dumps(quota()).encode())
+            kwargs["stdout"].write(json.dumps(quota()).encode())  # and a new log in agy's own folder
             return type("Result", (), {"returncode": 0})()
-        with tempfile.TemporaryDirectory() as tmp, \
+        with tempfile.TemporaryDirectory() as tmp, patch.object(c, "STATE_DIR", Path(tmp) / "state"), \
                 patch("agy_usage.shutil.which", return_value="/mock/agy"), \
                 patch("agy_usage.subprocess.run", side_effect=older):
-            self.assertEqual(agy_usage.cli_json(Path(tmp) / "agy-cli.log")["status"], "SUCCESS")
-        self.assertEqual([("--log-file" in args) for args in calls], [True, False])
+            with self.assertRaisesRegex(agy_usage.CliError, "no_log_file"):
+                agy_usage.cli_json(Path(tmp) / "agy-cli.log")
+            result = c.collect_antigravity()
+        # Every refresh would leave another log behind, so the release is not run without the flag.
+        self.assertEqual([("--log-file" in args) for args in calls], [True, True])
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn("--log-file", result["note"])
 
     def test_the_collector_keeps_agys_log_in_its_state_directory(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(c, "STATE_DIR", Path(tmp) / "state"), \
@@ -747,6 +755,64 @@ class FourthReviewTest(unittest.TestCase):
                 stats = c.scan_command_code_stats(NOW, None, home / "state")
             self.assertNotIn("pi_unfollowed", stats["scan"])
             self.assertNotIn("not counted", stats.get("note", ""))
+
+
+
+class FifthReviewTest(unittest.TestCase):
+    def test_forks_of_an_ancestor_the_file_cap_left_out_count_its_history_once(self):
+        first, second, third = (NOW - timedelta(hours=h) for h in (3, 2, 1))
+        with tempfile.TemporaryDirectory() as tmp, patch("usage_collector.STATS_MAX_FILES", 2), \
+                patch("pi_activity.SCAN_MAX_FILES", 2, create=True):
+            home = Path(tmp)
+            sessions = home / ".pi/agent/sessions/--project--"
+            parent = _pi_file(sessions / "p.jsonl", [{"type": "session", "id": "p"}] + _pi_turn(1, first, 15))
+            for name, n, when, tokens in (("a", 2, second, 20), ("b", 3, third, 25)):
+                _pi_file(sessions / f"{name}.jsonl", [{"type": "session", "id": name, "parentSession": str(parent)}]
+                         + _pi_turn(1, first, 15) + _pi_turn(n, when, tokens))
+            # The parent is the oldest file, so the two newest (its forks) fill the cap.
+            for name, when in (("p", first), ("a", second), ("b", third)):
+                os.utime(sessions / f"{name}.jsonl", (when.timestamp(), when.timestamp()))
+            with _pi_env(home):
+                stats = c.scan_command_code_stats(NOW, None, home / "state")
+                turns = pi_activity.scan(now=NOW)
+        self.assertEqual((stats["totals"]["prompts"], stats["totals"]["tokens"]), (3, 60))
+        self.assertEqual(turns, {"command-code": {"turns": 3, "sessions": 3}})
+
+    def test_a_sibling_export_rewritten_within_the_same_second_is_read_again(self):
+        at = NOW - timedelta(hours=1)
+        second = int(at.timestamp())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "brain"
+            # The full export stands for the conversation (written last); the short one is its sibling.
+            _conversation(root, "conversation", [_prompt(0, at)], [_prompt(0, at), _reply(1, at, 7, 3)])
+            logs = root / "conversation" / ".system_generated" / "logs"
+            os.utime(logs / "transcript_full.jsonl", ns=(second * 10**9 + 900_000_000,) * 2)
+            os.utime(logs / "transcript.jsonl", ns=(second * 10**9 + 100_000_000,) * 2)
+            before = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+            # Rewritten in the same second with as many bytes: only the subsecond mtime moves.
+            _conversation(root, "conversation", None, [_prompt(0, at), _reply(1, at, 8, 4)])
+            os.utime(logs / "transcript.jsonl", ns=(second * 10**9 + 200_000_000,) * 2)
+            after = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+        self.assertEqual(before["totals"]["tokens"], 10)
+        self.assertEqual(after["totals"]["tokens"], 12)
+
+    def test_future_dated_opencode_rows_wait_for_their_time_and_are_never_cached(self):
+        go = {"id": "m1", "providerID": "opencode-go"}
+        later = NOW + timedelta(days=1)
+        v2 = [("s", 0, "user", {"text": "x"}), ("s", 1, "assistant", {"model": go, "tokens": _opencode_tokens(15)}),
+              ("s", 2, "user", {"text": "y"}, later),
+              ("s", 3, "assistant", {"model": go, "tokens": _opencode_tokens(20)}, later)]
+        v1 = [("t", {"role": "assistant", "providerID": "opencode-go", "modelID": "m1",
+                     "tokens": _opencode_tokens(5, total=5)}, later)]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _opencode_db(Path(tmp) / "opencode.db", v2, v1)
+            first = c.scan_opencode_stats(NOW, db, Path(tmp) / "state")
+            again = c.scan_opencode_stats(NOW, db, Path(tmp) / "state")
+            after = c.scan_opencode_stats(later + timedelta(minutes=1), db, Path(tmp) / "state")
+        self.assertEqual((first["totals"]["prompts"], first["totals"]["tokens"]), (1, 15))
+        self.assertEqual([row["date"] for row in first["daily"]], [NOW.date().isoformat()])
+        self.assertEqual((again["scan"]["files_scanned"], again["scan"]["files_cached"]), (1, 0))
+        self.assertEqual((after["totals"]["prompts"], after["totals"]["tokens"]), (2, 40))
 
 
 if __name__ == "__main__":

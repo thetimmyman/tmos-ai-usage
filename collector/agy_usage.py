@@ -97,13 +97,9 @@ def cli_json(log_file=None):
         raise CliError("old_version")
     usage = [binary, "-p", "/usage", "--output-format", "json", "--print-timeout", "15s"]
     with _log_file(log_file) as log:
-        try:
-            code, raw = _run(usage + ["--log-file", str(log)], 18)
-        except CliError as exc:
-            if str(exc) != "no_log_file":
-                raise
-            # A release without `--log-file` still answers; it writes its own default log.
-            code, raw = _run(usage, 18)
+        # A release without `--log-file` raises `no_log_file` and is not run again without it: every
+        # check would leave another log in agy's own folder, with nothing to bound them.
+        code, raw = _run(usage + ["--log-file", str(log)], 18)
     try:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -162,6 +158,7 @@ def collect(c):
         reasons = {
             "unavailable": "Install the official Antigravity CLI (agy) to read its quota",
             "old_version": "Update agy to 1.3.5 or newer for read-only JSON quota checks",
+            "no_log_file": "Update agy to read its quota: this release has no --log-file, so every check would leave another log file",
             "unauthenticated": "Run agy interactively and sign in with your Google subscription account",
             "timeout": "Official agy quota check timed out; retry after checking agy",
         }

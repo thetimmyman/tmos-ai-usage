@@ -52,7 +52,9 @@ Antigravity requires the official `agy` CLI version 1.3.5 or newer and a saved G
 subscription sign-in. Run `agy` interactively once, then refresh AI Usage. Quota checks
 are answered by the CLI itself without a model turn, and run with the CLI's
 self-updater switched off (`AGY_CLI_DISABLE_AUTO_UPDATE=true`), so a scheduled read never
-changes the installed CLI. The collapsed meters show the
+changes the installed CLI. Each check gives agy one log file, `agy-cli.log` in the AI Usage
+state directory, rewritten every run; a release without `--log-file` is reported as needing an
+update and is not run, since every check would leave another log in agy's own folder. The collapsed meters show the
 Gemini group's limits; expand the row for each group's separate allowances and resets.
 The CLI does not report your subscription tier or fee. Confirm your actual fee in its
 provider tab for activity comparisons; no Google AI Pro price is assumed.

@@ -724,10 +724,11 @@ STATS_CACHE_VERSION = 6
 STATS_MAX_FILES = 600
 
 
-def _recent_files(base: Path, pattern: str, since: float, include=None) -> list[Path]:
+def _recent_files(base: Path, pattern: str, since: float, include=None, limit=None) -> list[Path]:
     """Files under `base` matching `pattern`, newest first, bounded, never fatal.
 
-    `include` filters before the bound applies, so a file it rejects never takes a place.
+    `include` filters before the bound applies, so a file it rejects never takes a place. The bound
+    is `limit`, else `STATS_MAX_FILES`; 0 means every file.
     """
     if not base.is_dir():
         return []
@@ -740,7 +741,8 @@ def _recent_files(base: Path, pattern: str, since: float, include=None) -> list[
         if mtime >= since and (include is None or include(path)):
             found.append((mtime, path))
     found.sort(key=lambda item: item[0], reverse=True)
-    return [path for _, path in found[:STATS_MAX_FILES]]
+    bound = STATS_MAX_FILES if limit is None else limit
+    return [path for _, path in (found[:bound] if bound else found)]
 
 
 def _jsonl_rows(path: Path) -> list[dict]:
@@ -1384,7 +1386,9 @@ def _scan_pi_transcripts(
 
     The files are where Pi writes them (`pi_activity.sessions_dir`). A forked or cloned session's
     copies of a scanned ancestor's entries count once, in the ancestor, so a cached contribution
-    also depends on which of its ancestors are scanned and on their files.
+    also depends on which of its ancestors are scanned and on their files. The file cap keeps the
+    newest files, and every ancestor of theirs in the window too, so a cap never makes several
+    forks count the history of an ancestor it left out.
     """
     base = base or pi_activity.sessions_dir()
     if not base.is_dir():
@@ -1397,7 +1401,8 @@ def _scan_pi_transcripts(
     scanned = cached = 0
     contribution_fn = _pi_contribution_for(provider)
     prefix = f"pi:{provider}:"
-    files = _recent_files(base, "*.jsonl", cutoff)
+    candidates = _recent_files(base, "*.jsonl", cutoff, limit=0)
+    files = pi_activity.with_ancestors(candidates[:STATS_MAX_FILES], candidates)
     lineage = pi_activity.Lineage(files)
     for path in files:
         key = prefix + str(path)
@@ -1553,7 +1558,8 @@ def _stat_signature(paths: list[Path]) -> str:
         except OSError:
             parts.append(f"{path.name}:absent")
             continue
-        parts.append(f"{path.name}:{info.st_size}:{_int(info.st_mtime)}")
+        # Nanoseconds: a rewrite with as many bytes within the same second still moves the key.
+        parts.append(f"{path.name}:{info.st_size}:{info.st_mtime_ns}")
     return "|".join(parts)
 
 
@@ -1668,10 +1674,14 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
     it is configured with; only what OpenCode Go answered is counted (`_opencode_count`).
 
     Opened `mode=ro`: a running OpenCode holds the write lock and a WAL, and this never writes to
-    the database. A row whose JSON does not parse is skipped, never guessed at.
+    the database. A row whose JSON does not parse is skipped, never guessed at. A row dated after
+    `now` (a skewed clock) waits for its time, and a contribution that left one out is not cached,
+    so a later refresh counts it.
     """
     stats = _Stats("")
     cutoff_ms = _int((now - timedelta(days=STATS_DAYS)).timestamp() * 1000)
+    now_ms = _int(now.timestamp() * 1000)
+    deferred = False
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)  # read-only; never writes
     try:
         tables = {
@@ -1683,22 +1693,31 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
         if "session_message" in tables:
             query = (
                 "SELECT session_id, time_created, type, data FROM session_message "
-                "WHERE time_created >= ? ORDER BY session_id, seq"
+                "WHERE time_created >= ? AND time_created <= ? ORDER BY session_id, seq"
             )
-            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms,)), _opencode_kind))
+            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind))
+            deferred = con.execute(
+                "SELECT EXISTS (SELECT 1 FROM session_message WHERE time_created > ?)", (now_ms,)
+            ).fetchone()[0]
         # OpenCode keeps the v1 `message` rows through the v2 cutover, and its migration copies each
         # one into `session_message` under the same id. So both are read: a v1 row counts only when
         # v2 lacks its id, which keeps sessions that live only in v1 without counting migrated ones
         # twice. A database with neither table raises here, as it always did.
         if "message" in tables or "session_message" not in tables:
-            query = "SELECT session_id, time_created, NULL, data FROM message WHERE time_created >= ?"
+            query = "SELECT session_id, time_created, NULL, data FROM message WHERE time_created >= ? AND time_created <= ?"
             if "session_message" in tables:
                 query += " AND id NOT IN (SELECT id FROM session_message)"
             query += " ORDER BY session_id, time_created, id"
-            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms,)), _opencode_kind))
+            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind))
+            deferred = deferred or con.execute(
+                "SELECT EXISTS (SELECT 1 FROM message WHERE time_created > ?)", (now_ms,)
+            ).fetchone()[0]
     finally:
         con.close()
-    return {"days": stats.days, "models": stats.models}
+    result = {"days": stats.days, "models": stats.models}
+    if deferred:
+        result["cacheable"] = False
+    return result
 
 
 def scan_opencode_stats(
@@ -1731,9 +1750,14 @@ def scan_opencode_stats(
         contribution = entry
         scan = {"files_scanned": 0, "files_cached": 1}
     else:
-        contribution = _json_safe(_opencode_contribution(db, now))
+        raw = _opencode_contribution(db, now)
+        contribution = _json_safe(raw)
         contribution["signature"] = signature
-        cache["files"][key] = contribution
+        # A contribution that left a future-dated row out is counted again at the next refresh.
+        if raw.get("cacheable", True):
+            cache["files"][key] = contribution
+        else:
+            cache["files"].pop(key, None)
         _save_stats_cache(cache, state_dir)
         scan = {"files_scanned": 1, "files_cached": 0}
     parts = [contribution]

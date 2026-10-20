@@ -12,6 +12,7 @@ ALIASES = {'commandcode': 'command-code', 'command-code': 'command-code',
            'clinepass': 'clinepass', 'opencode-go': 'opencode-go', 'openai-codex': 'codex'}
 HEADER_MAX = 64 * 1024  # a session header is one small JSON line
 LINEAGE_MAX = 16  # parentSession links followed from one session, at most
+SCAN_MAX_FILES = 600  # the newest session files a turn count reads (and their ancestors, see with_ancestors)
 
 
 def _absolute(value):
@@ -199,6 +200,27 @@ class Lineage:
         return frozenset(found)
 
 
+def with_ancestors(files, candidates):
+    """`files`, then every ancestor of theirs among `candidates` that `files` left out.
+
+    A scan bounded to its newest files can leave out a session that several of them were forked
+    from. Each fork would then count its copies of that session's entries, once per fork. With the
+    ancestor scanned too, its entries count once, in the ancestor (`Lineage`).
+    """
+    files = list(files)
+    if len(files) >= len(candidates):
+        return files
+    lineage = Lineage(candidates)
+    kept = {_resolved(path) for path in files}
+    for path in list(files):
+        for ancestor in lineage.ancestors(path):
+            key = _resolved(ancestor)
+            if key not in kept:
+                kept.add(key)
+                files.append(ancestor)
+    return files
+
+
 def scan(root=None, now=None):
     root = Path(root) if root is not None else sessions_dir()
     now = now or datetime.now(timezone.utc)
@@ -210,7 +232,8 @@ def scan(root=None, now=None):
     for path in root.rglob('*.jsonl'):
         try: candidates.append((path.stat().st_mtime, path))
         except OSError: continue
-    files = [p for _,p in sorted(candidates, reverse=True)[:600]]
+    ordered = [p for _,p in sorted(candidates, reverse=True)]
+    files = with_ancestors(ordered[:SCAN_MAX_FILES], ordered)
     lineage = Lineage(files)
     for path in files:
         pending = []
