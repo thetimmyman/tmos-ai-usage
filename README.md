@@ -57,7 +57,8 @@ provider tab for activity comparisons; no Google AI Pro price is assumed.
 
 Local activity includes `agy` called through Pi's shell tool. One canonical full
 transcript per conversation is read, with summary export fallback; chunk copies and
-duplicate step indexes are excluded. Only explicit user-input counts, dates, hashed
+duplicate step indexes are excluded. A transcript over 32 MiB is read from its most recent 32 MiB, and
+the activity note then says the history is incomplete. Only explicit user-input counts, dates, hashed
 conversation identities, and reported input/output counters enter the provider record.
 The private incremental scanner cache also retains source-file paths.
 Prompt/response content is discarded. Model names and cache/input overlap are not

@@ -1,5 +1,7 @@
 import copy
 import json
+import os
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
@@ -188,6 +190,115 @@ class AntigravityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             subscription_value.save_price(tmp, "antigravity", 18, "month")
             self.assertEqual(subscription_value.price_for({"provider": "antigravity"}, json.loads((Path(tmp)/"subscriptions.json").read_text()), NOW)["monthly_usd"], 18)
+
+
+def _transcript(root, rows):
+    logs = root / "synthetic-session" / ".system_generated" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "transcript_full.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+
+class ReviewFindingsTest(unittest.TestCase):
+    def test_oversized_transcript_counts_its_recent_tail_and_says_so(self):
+        early = {"step_index": 0, "type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE", "created_at": NOW.isoformat()}
+        filler = [{"step_index": i, "type": "GENERIC", "source": "MODEL", "status": "DONE", "created_at": NOW.isoformat(), "pad": "x" * 200}
+                  for i in range(1, 60)]
+        late = [{"step_index": 60, "type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE", "created_at": NOW.isoformat()},
+                {"step_index": 61, "type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE", "created_at": NOW.isoformat(),
+                 "input_tokens": 100, "output_tokens": 20}]
+        with tempfile.TemporaryDirectory() as tmp, patch("agy_usage.MAX_TRANSCRIPT", 4096):
+            root = Path(tmp) / "brain"
+            _transcript(root, [early, *filler, *late])
+            self.assertGreater((root / "synthetic-session/.system_generated/logs/transcript_full.jsonl").stat().st_size, 2 * 4096)
+            state = Path(tmp) / "state"
+            stats = c.scan_antigravity_stats(NOW, root, state)
+            cached = c.scan_antigravity_stats(NOW, root, state)
+        # The recent prompt and reply at the end are counted; the early prompt lies before the tail.
+        self.assertEqual(stats["totals"]["prompts"], 1)
+        self.assertEqual(stats["totals"]["tokens"], 120)
+        self.assertEqual(stats["scan"]["files_partial"], 1)
+        self.assertIn("Incomplete: 1 transcript(s)", stats["note"])
+        self.assertEqual(cached["scan"]["files_cached"], 1)
+        self.assertEqual(cached["scan"]["files_partial"], 1)
+
+    def test_transcript_within_the_limit_is_complete(self):
+        rows = [{"step_index": 0, "type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE", "created_at": NOW.isoformat()}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "brain"
+            _transcript(root, rows)
+            stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
+        self.assertEqual(stats["scan"]["files_partial"], 0)
+        self.assertNotIn("Incomplete", stats["note"])
+
+    def test_opencode_reads_v1_only_sessions_beside_v2_and_counts_each_message_once(self):
+        ms = int(NOW.timestamp() * 1000)
+        user = json.dumps({"role": "user"})
+        tokens = {"input": 10, "output": 5, "total": 15, "cache": {}}
+        v1_reply = json.dumps({"role": "assistant", "modelID": "m1", "tokens": tokens})
+        v2_reply = json.dumps({"role": "assistant", "model": {"id": "m1"}, "tokens": tokens})
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "opencode.db"
+            con = sqlite3.connect(db)
+            con.execute("CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, "
+                        "time_updated integer NOT NULL, data text NOT NULL)")
+            con.execute("CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, "
+                        "seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)")
+            v1 = "INSERT INTO message VALUES (?, ?, ?, ?, ?)"
+            v2 = "INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)"
+            # Migrated: the same messages under the same ids in both tables.
+            con.execute(v1, ("a0", "migrated", ms, ms, user))
+            con.execute(v1, ("a1", "migrated", ms, ms, v1_reply))
+            con.execute(v2, ("a0", "migrated", "user", 0, ms, ms, user))
+            con.execute(v2, ("a1", "migrated", "assistant", 1, ms, ms, v2_reply))
+            # Still only in v1, and only in v2.
+            con.execute(v1, ("b0", "legacy", ms, ms, user))
+            con.execute(v1, ("b1", "legacy", ms, ms, v1_reply))
+            con.execute(v2, ("c0", "new", "user", 0, ms, ms, user))
+            con.execute(v2, ("c1", "new", "assistant", 1, ms, ms, v2_reply))
+            con.commit()
+            con.close()
+            stats = c.scan_opencode_stats(NOW, db, Path(tmp) / "state")
+        self.assertEqual(stats["totals"]["prompts"], 3)
+        self.assertEqual(stats["totals"]["sessions"], 3)
+        self.assertEqual(stats["totals"]["tokens"], 45)
+        self.assertEqual([m["id"] for m in stats["models"]], ["m1"])
+
+    def test_pi_turns_already_in_a_history_are_not_added_again(self):
+        document = {"providers": [
+            {"provider": "command-code", "stats": {
+                "available": True, "coverage_days": 30, "source": "~/.commandcode/projects + ~/.pi/agent/sessions",
+                "totals": {"prompts": 5, "sessions": 2}, "scan": {"files_scanned": 2, "files_cached": 0, "pi_prompts": 3, "pi_sessions": 1}}},
+            {"provider": "clinepass", "stats": {
+                "available": True, "coverage_days": 30, "source": "~/.cline", "totals": {"prompts": 4, "sessions": 1}, "scan": {}}},
+        ]}
+        observed = {"command-code": {"turns": 3, "sessions": 1}, "clinepass": {"turns": 2, "sessions": 1}}
+        with tempfile.TemporaryDirectory() as tmp, patch("pi_activity.scan", return_value=observed):
+            subscription_value.attach(document, tmp, NOW)
+        merged, separate = (row["activity"] for row in document["providers"])
+        self.assertEqual((merged["observed_turns"], merged["pi_turns"], merged["cli_turns"], merged["observed_sessions"]), (5, 3, 2, 2))
+        self.assertEqual(merged["source"], "~/.commandcode/projects + ~/.pi/agent/sessions")
+        # A provider whose history holds no Pi sessions still gets them added, once.
+        self.assertEqual((separate["observed_turns"], separate["pi_turns"], separate["cli_turns"], separate["observed_sessions"]), (6, 2, 4, 2))
+
+    def test_pi_session_counts_once_from_collector_to_ranking(self):
+        rows = [{"type": "session", "id": "pi-session"},
+                {"type": "message", "timestamp": NOW.isoformat(), "message": {"role": "user", "content": "x"}},
+                {"type": "message", "timestamp": NOW.isoformat(), "message": {
+                    "role": "assistant", "provider": "commandcode", "model": "cc/m1",
+                    "usage": {"input": 10, "output": 5, "totalTokens": 15}}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            sessions = home / ".pi/agent/sessions/project"
+            sessions.mkdir(parents=True)
+            (sessions / "s.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                stats = c.scan_command_code_stats(NOW, None, home / "state")
+                document = {"providers": [{"provider": "command-code", "stats": stats}]}
+                subscription_value.attach(document, home, NOW)
+        self.assertEqual(stats["totals"]["prompts"], 1)
+        self.assertEqual(stats["scan"]["pi_prompts"], 1)
+        activity = document["providers"][0]["activity"]
+        self.assertEqual((activity["observed_turns"], activity["pi_turns"], activity["cli_turns"]), (1, 1, 0))
 
 
 if __name__ == "__main__":

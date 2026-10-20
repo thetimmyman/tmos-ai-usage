@@ -122,13 +122,27 @@ def attach(document, directory, now=None):
         turns = total.get('prompts') if stats.get('available') is True else None
         if type(turns) is not int or turns < 0: turns = None
         pi_counts = pi.get(row['provider'], {})
-        if pi_counts.get('turns'):
-            turns = (turns or 0) + pi_counts['turns']
+        scan = stats.get('scan') if isinstance(stats.get('scan'), dict) else {}
+        # The collector merges Pi sessions into some providers' own history and records how many
+        # prompts came from them (`scan.pi_prompts`). Those Pi turns are counted already.
+        merged = stats.get('available') is True and type(scan.get('pi_prompts')) is int and scan['pi_prompts'] >= 0
+        if merged:
+            pi_turns = scan['pi_prompts']
+            cli_turns = max(0, turns - pi_turns) if turns is not None else None
+            sessions = total.get('sessions') or 0
+            source = str(stats.get('source') or '')
+        else:
+            pi_turns = pi_counts.get('turns', 0)
+            if pi_counts.get('turns'):
+                turns = (turns or 0) + pi_counts['turns']
+            cli_turns = total.get('prompts') if stats.get('available') else None
+            sessions = (total.get('sessions') or 0) + pi_counts.get('sessions', 0) if stats.get('available') or pi_counts else None
+            source = str(stats.get('source') or '') + (' + ~/.pi/agent/sessions' if pi_counts.get('turns') else '')
         row['activity'] = {'observed_turns': turns,
-                           'pi_turns': pi_counts.get('turns', 0),
-                           'cli_turns': total.get('prompts') if stats.get('available') else None, 'observed_sessions': (total.get('sessions') or 0) + pi_counts.get('sessions', 0) if stats.get('available') or pi_counts else None,
+                           'pi_turns': pi_turns,
+                           'cli_turns': cli_turns, 'observed_sessions': sessions,
                            'window_days': stats.get('coverage_days') or (30 if pi_counts else None), 'price': price,
-                           'source': str(stats.get('source') or '') + (' + ~/.pi/agent/sessions' if pi_counts.get('turns') else ''),
+                           'source': source,
                            'first_date': total.get('first_date'), 'last_date': total.get('last_date'),
                            'reason': ('Set your subscription price in this provider tab.' if price is None else
                                       'No observed local turns available.' if turns is None else

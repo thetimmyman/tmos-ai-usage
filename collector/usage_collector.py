@@ -719,7 +719,7 @@ def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
 # borrows another provider's history, and a scan that finds nothing reports nothing, not zero.
 
 STATS_DAYS = 30
-STATS_CACHE_VERSION = 3
+STATS_CACHE_VERSION = 4
 STATS_MAX_FILES = 600
 
 
@@ -846,6 +846,8 @@ def _scan_transcripts(
         fresh = _json_safe(raw)
         fresh["size"] = info.st_size
         fresh["mtime"] = info.st_mtime
+        if raw.get("partial"):
+            fresh["partial"] = True  # the reader counted only part of the file, and says so
         # A reader may defer a future-dated row until the next refresh. Do not
         # permanently cache a partial contribution even if the file stays unchanged.
         if raw.get("cacheable", True):
@@ -1268,6 +1270,22 @@ def _pi_contribution_for(provider: str):
     return contribution
 
 
+def _pi_share(pi_parts: list[dict], now: datetime) -> dict:
+    """How much of a merged history came from Pi sessions.
+
+    The value ranking (`subscription_value.attach`) adds Pi turns to every provider's own prompts.
+    A history that already holds them says so here, so the same Pi turns are not counted twice.
+    """
+    pi = _absorb(pi_parts, now)
+    sessions: set = set()
+    for row in pi.days.values():
+        sessions |= row["sessions"]
+    return {
+        "pi_prompts": sum(_int(row["prompts"]) for row in pi.days.values()),
+        "pi_sessions": len(sessions),
+    }
+
+
 def _scan_pi_transcripts(
     provider: str,
     now: datetime,
@@ -1400,6 +1418,7 @@ def scan_command_code_stats(
             scan = {
                 "files_scanned": scan["files_scanned"] + pi_scan["files_scanned"],
                 "files_cached": scan["files_cached"] + pi_scan["files_cached"],
+                **_pi_share(pi_parts, now),
             }
             pi_included = True
     stats = _absorb(parts, now)
@@ -1434,12 +1453,77 @@ def _stat_signature(paths: list[Path]) -> str:
     return "|".join(parts)
 
 
+def _opencode_bucket(tokens: dict) -> tuple[dict, int]:
+    raw_cache = tokens.get("cache")
+    cache = raw_cache if isinstance(raw_cache, dict) else {}
+    bucket = {
+        "input_tokens": _num(tokens.get("input")) or 0,
+        "output_tokens": _num(tokens.get("output")) or 0,
+        "cache_read_tokens": _num(cache.get("read")) or 0,
+        "cache_write_tokens": _num(cache.get("write")) or 0,
+    }
+    total = _int(tokens.get("total")) or _int(sum(bucket.values()))
+    bucket["total_tokens"] = total
+    return bucket, total
+
+
+def _opencode_payload(created, data) -> tuple[datetime | None, dict | None]:
+    when = _from_epoch(created, "ms")
+    if when is None:
+        return None, None
+    try:
+        payload = json.loads(data)
+    except (TypeError, ValueError):
+        return None, None
+    return (when, payload) if isinstance(payload, dict) else (None, None)
+
+
+def _opencode_v2_row(stats, session_id, created, msg_type, data) -> None:
+    """A v2 `session_message` row: tokens in `data.tokens`, the model in `data.model`."""
+    when, payload = _opencode_payload(created, data)
+    if payload is None:
+        return
+    session = str(session_id or "")
+    if msg_type == "user" or payload.get("role") == "user":
+        stats.add_prompt(when, session)
+    if msg_type == "assistant" or payload.get("role") == "assistant":
+        raw_tokens = payload.get("tokens")
+        if isinstance(raw_tokens, dict):
+            bucket, total = _opencode_bucket(raw_tokens)
+            raw_model = payload.get("model") or payload.get("modelID")
+            model = (
+                raw_model.get("id")
+                if isinstance(raw_model, dict)
+                else (str(raw_model) if raw_model else None)
+            )
+            stats.add_tokens(when, session, model, bucket, total)
+
+
+def _opencode_v1_row(stats, session_id, created, data) -> None:
+    """A v1 `message` row: tokens and `modelID` in `data`, prompts are the user rows."""
+    when, payload = _opencode_payload(created, data)
+    if payload is None:
+        return
+    session = str(session_id or "")
+    raw_tokens = payload.get("tokens")
+    model = payload.get("modelID")
+    if not isinstance(model, str) or not model:
+        raw_model = payload.get("model")
+        model = raw_model.get("modelID") if isinstance(raw_model, dict) else None
+    if isinstance(raw_tokens, dict):
+        bucket, total = _opencode_bucket(raw_tokens)
+        stats.add_tokens(when, session, model, bucket, total)
+    if str(payload.get("role")) == "user":
+        stats.add_prompt(when, session)
+
+
 def _opencode_contribution(path: Path, now: datetime) -> dict:
     """OpenCode's own database, read read-only: tokens and model per assistant reply.
 
     OpenCode keeps sessions in SQLite rather than in transcripts. In v2 (`session_message` table),
     assistant rows carry tokens in `data.tokens` and model in `data.model`. In v1 (`message` table),
-    assistant rows carry tokens and `modelID` in `data`. Prompts are user rows.
+    assistant rows carry tokens and `modelID` in `data`. Prompts are user rows. A database in the
+    middle of the v2 cutover has both tables, and both are read (each message once, by id).
 
     Opened `mode=ro`: a running OpenCode holds the write lock and a WAL, and this never writes to
     the database. A row whose JSON does not parse is skipped, never guessed at.
@@ -1448,82 +1532,26 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
     cutoff_ms = _int((now - timedelta(days=STATS_DAYS)).timestamp() * 1000)
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)  # read-only; never writes
     try:
-        has_v2 = bool(
-            con.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_message'"
-            ).fetchone()
-        )
-        if has_v2:
+        tables = {
+            name
+            for (name,) in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('message', 'session_message')"
+            )
+        }
+        if "session_message" in tables:
             query = "SELECT session_id, time_created, type, data FROM session_message WHERE time_created >= ?"
             for session_id, created, msg_type, data in con.execute(query, (cutoff_ms,)):
-                when = _from_epoch(created, "ms")
-                if when is None:
-                    continue
-                try:
-                    payload = json.loads(data)
-                except (TypeError, ValueError):
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                session = str(session_id or "")
-                if msg_type == "user" or payload.get("role") == "user":
-                    stats.add_prompt(when, session)
-                if msg_type == "assistant" or payload.get("role") == "assistant":
-                    raw_tokens = payload.get("tokens")
-                    tokens = raw_tokens if isinstance(raw_tokens, dict) else None
-                    if tokens is not None:
-                        raw_cache = tokens.get("cache")
-                        cache = raw_cache if isinstance(raw_cache, dict) else {}
-                        bucket = {
-                            "input_tokens": _num(tokens.get("input")) or 0,
-                            "output_tokens": _num(tokens.get("output")) or 0,
-                            "cache_read_tokens": _num(cache.get("read")) or 0,
-                            "cache_write_tokens": _num(cache.get("write")) or 0,
-                        }
-                        total = _int(tokens.get("total")) or _int(sum(bucket.values()))
-                        bucket["total_tokens"] = total
-                        raw_model = payload.get("model") or payload.get("modelID")
-                        model = (
-                            raw_model.get("id")
-                            if isinstance(raw_model, dict)
-                            else (str(raw_model) if raw_model else None)
-                        )
-                        stats.add_tokens(when, session, model, bucket, total)
-        else:
+                _opencode_v2_row(stats, session_id, created, msg_type, data)
+        # OpenCode keeps the v1 `message` rows through the v2 cutover, and its migration copies each
+        # one into `session_message` under the same id. So both are read: a v1 row counts only when
+        # v2 lacks its id, which keeps sessions that live only in v1 without counting migrated ones
+        # twice. A database with neither table raises here, as it always did.
+        if "message" in tables or "session_message" not in tables:
             query = "SELECT session_id, time_created, data FROM message WHERE time_created >= ?"
+            if "session_message" in tables:
+                query += " AND id NOT IN (SELECT id FROM session_message)"
             for session_id, created, data in con.execute(query, (cutoff_ms,)):
-                when = _from_epoch(created, "ms")
-                if when is None:
-                    continue
-                try:
-                    payload = json.loads(data)
-                except (TypeError, ValueError):
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                session = str(session_id or "")
-                raw_tokens = payload.get("tokens")
-                tokens = raw_tokens if isinstance(raw_tokens, dict) else None
-                model = payload.get("modelID")
-                if not isinstance(model, str) or not model:
-                    raw_model = payload.get("model")
-                    model = (
-                        raw_model.get("modelID") if isinstance(raw_model, dict) else None
-                    )
-                if tokens is not None:
-                    raw_cache = tokens.get("cache")
-                    cache = raw_cache if isinstance(raw_cache, dict) else {}
-                    bucket = {
-                        "input_tokens": _num(tokens.get("input")) or 0,
-                        "output_tokens": _num(tokens.get("output")) or 0,
-                        "cache_read_tokens": _num(cache.get("read")) or 0,
-                        "cache_write_tokens": _num(cache.get("write")) or 0,
-                    }
-                    total = _int(tokens.get("total")) or _int(sum(bucket.values()))
-                    bucket["total_tokens"] = total
-                    stats.add_tokens(when, session, model, bucket, total)
-                if str(payload.get("role")) == "user":
-                    stats.add_prompt(when, session)
+                _opencode_v1_row(stats, session_id, created, data)
     finally:
         con.close()
     return {"days": stats.days, "models": stats.models}
@@ -1543,7 +1571,7 @@ def scan_opencode_stats(
             if pi_parts:
                 stats = _absorb(pi_parts, now)
                 stats.source = "~/.pi/agent/sessions"
-                stats.scan = pi_scan
+                stats.scan = {**pi_scan, **_pi_share(pi_parts, now)}
                 return stats.finish(now)
         return _no_stats(
             "",
@@ -1572,6 +1600,7 @@ def scan_opencode_stats(
             scan = {
                 "files_scanned": scan["files_scanned"] + pi_scan["files_scanned"],
                 "files_cached": scan["files_cached"] + pi_scan["files_cached"],
+                **_pi_share(pi_parts, now),
             }
             pi_included = True
     stats = _absorb(parts, now)

@@ -149,13 +149,16 @@ function nullableNumber(value) {
   return isFinite(n) ? n : null
 }
 
+// Groups keep their normalized windows, so a view formats the reset countdown against its own
+// clock (quotaGroupDetail with nowMs) instead of the time the document was parsed. `detail` is the
+// same text as of parsing, for callers without a clock.
 function normalizeQuotaGroups(raw, observedAtMs) {
-  var groups, i, j, group, lines, windows, win, resetsInS, resetsAt, resetsAtMs, winObj, resetStr
+  var groups, i, j, group, windows, list, win, resetsInS, resetsAt, resetsAtMs, entry
   if (!Array.isArray(raw)) return []
   groups = []
   for (i = 0; i < raw.length; i++) {
     group = raw[i]
-    lines = []
+    list = []
     windows = group && Array.isArray(group.windows) ? group.windows : []
     for (j = 0; j < windows.length; j++) {
       win = windows[j]
@@ -166,22 +169,37 @@ function normalizeQuotaGroups(raw, observedAtMs) {
       if (!resetsAtMs && resetsInS > 0 && observedAtMs > 0) {
         resetsAtMs = observedAtMs + resetsInS * 1000
       }
-      winObj = {
+      list.push({
         name: win.name,
         label: WINDOW_LABEL[win.name],
         remainingPct: Number(win.remaining_pct),
         resetsInS: resetsInS,
         resetsAt: resetsAt,
         resetsAtMs: resetsAtMs
-      }
-      resetStr = resetText(winObj)
-      lines.push(`${WINDOW_LABEL[win.name]}: ${Number(win.remaining_pct).toFixed(1)}% left${resetStr ? " · " + resetStr : ""}`)
+      })
     }
-    if (lines.length > 0) {
-      groups.push({ name: String(group && group.name || "Model group"), detail: lines.join("\n") })
+    if (list.length > 0) {
+      entry = { name: String(group && group.name || "Model group"), windows: list }
+      entry.detail = quotaGroupDetail(entry)
+      groups.push(entry)
     }
   }
   return groups
+}
+
+function quotaGroupDetail(group, nowMs) {
+  var lines, i, list, win, reset
+  // A QML delegate's modelData holds the windows as a list type that Array.isArray rejects.
+  list = group ? group.windows : null
+  if (!list || typeof list.length !== "number") return group && group.detail ? String(group.detail) : ""
+  lines = []
+  for (i = 0; i < list.length; i++) {
+    win = list[i]
+    if (!win) continue
+    reset = resetText(win, nowMs)
+    lines.push(`${win.label}: ${Number(win.remainingPct).toFixed(1)}% left${reset ? " · " + reset : ""}`)
+  }
+  return lines.join("\n")
 }
 
 // Outcomes are observed ledger counts, never a claim that the whole task population was captured.

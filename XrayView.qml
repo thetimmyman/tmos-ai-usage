@@ -387,7 +387,7 @@ Rectangle {
                         objectName: "quotaGroup-" + modelData.name
                         width: parent.width
                         color: root.secondary
-                        text: modelData.name + "\n" + modelData.detail
+                        text: modelData.name + "\n" + Model.quotaGroupDetail(modelData, root.nowMs)
                     }
                 }
                 Label { text: "SUBSCRIPTION PRICE"; color: Color.accent; font.bold: true }

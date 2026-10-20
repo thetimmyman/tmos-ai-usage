@@ -616,7 +616,7 @@ Ui.Panel {
                                         required property var modelData
                                         width: detail.width
                                         textFormat: Text.PlainText
-                                        text: modelData.name + "\n" + modelData.detail
+                                        text: modelData.name + "\n" + Model.quotaGroupDetail(modelData, root.nowMs)
                                         wrapMode: Text.Wrap
                                         color: root.dim
                                         font.family: root.fontFamily

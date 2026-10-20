@@ -115,4 +115,14 @@ const tooltip5h = model.windowTooltip(resetDoc.windows['5h'], nowMs);
 assert.match(tooltip5h, /5h: 0.0% remaining/);
 assert.match(tooltip5h, /Resets Today/);
 console.log('PASS reset occurrence and time remaining formatting for quota windows');
+const groupDoc = model.parseDocument(JSON.stringify({
+  observed_at: '2026-10-19T14:00:00Z',
+  providers: [{provider: 'antigravity', status: 'ok',
+    quota_groups: [{name: 'Gemini Models', windows: [{name: '5h', remaining_pct: 60, resets_in_s: 7200}]}]}]
+})).providers[0];
+const quotaGroup = groupDoc.quotaGroups[0];
+assert.equal(quotaGroup.windows[0].resetsAtMs, Date.parse('2026-10-19T16:00:00Z'));
+assert.match(model.quotaGroupDetail(quotaGroup, Date.parse('2026-10-19T14:00:00Z')), /^5h: 60\.0% left · .*\(in 2h 00m\)$/);
+assert.match(model.quotaGroupDetail(quotaGroup, Date.parse('2026-10-19T15:30:00Z')), /\(in 30m\)$/);
+console.log('PASS quota-group reset countdowns follow the view clock');
 

@@ -132,9 +132,23 @@ def _contribution(c, path, now):
     cutoff = now - timedelta(days=c.STATS_DAYS)
     seen = set()
     cacheable = True
+    partial = False
     try:
         with path.open("rb") as stream:
             read = 0
+            size = os.fstat(stream.fileno()).st_size
+            if size > MAX_TRANSCRIPT:
+                # New steps are appended, so the end of an oversized transcript holds its recent
+                # activity. Read the most recent MAX_TRANSCRIPT bytes from the first whole line in
+                # them, and report the file as partly counted rather than complete.
+                partial = True
+                stream.seek(size - MAX_TRANSCRIPT - 1)
+                if stream.read(1) != b"\n":
+                    while read < MAX_TRANSCRIPT:
+                        skipped = stream.readline(MAX_LINE + 1)
+                        read += len(skipped)
+                        if not skipped or skipped.endswith(b"\n"):
+                            break
             while read < MAX_TRANSCRIPT:
                 line = stream.readline(MAX_LINE + 1)
                 if not line:
@@ -174,7 +188,7 @@ def _contribution(c, path, now):
                     stats.add_tokens(when, session, None, bucket, bucket["total_tokens"])
     except OSError:
         pass
-    return {"days": stats.days, "models": stats.models, "cacheable": cacheable}
+    return {"days": stats.days, "models": stats.models, "cacheable": cacheable, "partial": partial}
 
 
 def scan_stats(c, now=None, root=None, state_dir=None):
@@ -189,10 +203,15 @@ def scan_stats(c, now=None, root=None, state_dir=None):
             path.name == "transcript.jsonl" and not (path.parent / "transcript_full.jsonl").is_file())
     parts, scanned = c._scan_transcripts(base, now, lambda p, t: _contribution(c, p, t), state_dir,
                                          "*/.system_generated/logs/transcript*.jsonl", include=include)
+    partial = sum(1 for part in parts if part.get("partial"))
     stats = c._absorb(parts, now)
     stats.source = "~/.gemini/antigravity-cli/brain"
-    stats.scan = scanned
+    stats.scan = {**scanned, "files_partial": partial}
     result = stats.finish(now)
     if result["available"]:
         result["note"] = "Local activity only. Tokens are reported input + output; cache overlap and model names are unspecified. History may include other sign-ins."
+        if partial:
+            mib = MAX_TRANSCRIPT // (1024 * 1024)
+            result["note"] += (f" Incomplete: {partial} transcript(s) over {mib} MiB; only the most recent {mib} MiB"
+                               " of each is counted.")
     return result
