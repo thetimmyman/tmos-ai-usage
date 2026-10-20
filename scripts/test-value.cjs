@@ -83,3 +83,46 @@ assert.equal(cohortDoc.outcomes.cohorts[0].name,'small-fixes');
 assert.equal(cohortDoc.outcomes.cohorts[0].counts.validated,1);
 assert.equal(cohortDoc.outcomes.coverageText,'observed ledger events · incomplete; observed counts only');
 console.log('PASS outcome cohort summaries normalize to observed-only counts');
+const agy=model.parseDocument(JSON.stringify({providers:[{provider:'antigravity',status:'ok',
+  quota_groups:[{name:'Gemini Models',windows:[{name:'5h',remaining_pct:60,resets_in_s:3600}]},
+                {name:'Claude and GPT models',windows:[{name:'week',remaining_pct:10}]}],
+  stats:{available:true,note:'Cache overlap unspecified',daily:[],models:[],totals:{},scan:{}}}]})).providers[0];
+assert.equal(agy.name,'Google AI / Antigravity');
+assert.equal(agy.quotaGroups.length,2);
+assert.match(agy.quotaGroups[0].detail,/60.0% left/);
+assert.match(agy.quotaGroups[1].detail,/10.0% left/);
+assert.match(agy.stats.sourceText,/Cache overlap unspecified/);
+assert.equal(agy.valueLabel,'Unranked');
+console.log('PASS Antigravity model groups and incomplete activity provenance');
+const resetDoc = model.parseDocument(JSON.stringify({
+  observed_at: '2026-10-19T14:00:00Z',
+  providers: [{
+    provider: 'opencode-go', status: 'ok',
+    windows: [
+      {name: '5h', used_pct: 100, remaining_pct: 0, resets_at: '2026-10-19T18:00:00Z', resets_in_s: 14400},
+      {name: 'week', used_pct: 40, remaining_pct: 60, resets_in_s: 7200}
+    ]
+  }]
+})).providers[0];
+assert.equal(resetDoc.windows['5h'].resetsAt, '2026-10-19T18:00:00Z');
+assert.equal(resetDoc.windows['5h'].resetsAtMs, Date.parse('2026-10-19T18:00:00Z'));
+const nowMs = Date.parse('2026-10-19T14:00:00Z');
+const text5h = model.resetText(resetDoc.windows['5h'], nowMs);
+assert.match(text5h, /^Resets Today .*\(in 4h 00m\)$/);
+const textNoObs = model.resetText({resetsInS: 7200}, nowMs);
+assert.equal(textNoObs, 'resets in 2h 00m');
+const tooltip5h = model.windowTooltip(resetDoc.windows['5h'], nowMs);
+assert.match(tooltip5h, /5h: 0.0% remaining/);
+assert.match(tooltip5h, /Resets Today/);
+console.log('PASS reset occurrence and time remaining formatting for quota windows');
+const groupDoc = model.parseDocument(JSON.stringify({
+  observed_at: '2026-10-19T14:00:00Z',
+  providers: [{provider: 'antigravity', status: 'ok',
+    quota_groups: [{name: 'Gemini Models', windows: [{name: '5h', remaining_pct: 60, resets_in_s: 7200}]}]}]
+})).providers[0];
+const quotaGroup = groupDoc.quotaGroups[0];
+assert.equal(quotaGroup.windows[0].resetsAtMs, Date.parse('2026-10-19T16:00:00Z'));
+assert.match(model.quotaGroupDetail(quotaGroup, Date.parse('2026-10-19T14:00:00Z')), /^5h: 60\.0% left · .*\(in 2h 00m\)$/);
+assert.match(model.quotaGroupDetail(quotaGroup, Date.parse('2026-10-19T15:30:00Z')), /\(in 30m\)$/);
+console.log('PASS quota-group reset countdowns follow the view clock');
+

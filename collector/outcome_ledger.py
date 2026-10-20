@@ -29,7 +29,7 @@ from pathlib import Path
 
 SCHEMA_VERSION = 3
 STATUSES = {"pending", "validated", "failed", "abandoned"}
-PROVIDERS = {"claude-code", "codex", "clinepass", "command-code", "opencode-go"}
+PROVIDERS = {"claude-code", "codex", "clinepass", "command-code", "opencode-go", "antigravity"}
 ATOM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 

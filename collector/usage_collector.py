@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/usage_collector.py — one honest picture of how much AI subscription is left.
 
-Five built-in providers, five first-party sources, and any provider you define as data, in one
+Built-in providers, first-party readings, and any provider you define as data, in one
 merged document under the tmosd state path (`~/.local/state/tmos/usage.json`, atomic write). The
 shell plugin `shell/plugins/tmos.usage`
 reads that file and does no network of its own (Omarchy-native rule N-series: a plugin displays,
@@ -115,6 +115,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import http_guard
+import pi_activity
 
 SCHEMA_VERSION = 3
 TIMEOUT_S = 8.0
@@ -719,12 +720,16 @@ def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
 # borrows another provider's history, and a scan that finds nothing reports nothing, not zero.
 
 STATS_DAYS = 30
-STATS_CACHE_VERSION = 3
+STATS_CACHE_VERSION = 6
 STATS_MAX_FILES = 600
 
 
-def _recent_files(base: Path, pattern: str, since: float) -> list[Path]:
-    """Files under `base` matching `pattern`, newest first, bounded, never fatal."""
+def _recent_files(base: Path, pattern: str, since: float, include=None, limit=None) -> list[Path]:
+    """Files under `base` matching `pattern`, newest first, bounded, never fatal.
+
+    `include` filters before the bound applies, so a file it rejects never takes a place. The bound
+    is `limit`, else `STATS_MAX_FILES`; 0 means every file.
+    """
     if not base.is_dir():
         return []
     found: list[tuple[float, Path]] = []
@@ -733,10 +738,11 @@ def _recent_files(base: Path, pattern: str, since: float) -> list[Path]:
             mtime = path.stat().st_mtime
         except OSError:
             continue
-        if mtime >= since:
+        if mtime >= since and (include is None or include(path)):
             found.append((mtime, path))
     found.sort(key=lambda item: item[0], reverse=True)
-    return [path for _, path in found[:STATS_MAX_FILES]]
+    bound = STATS_MAX_FILES if limit is None else limit
+    return [path for _, path in (found[:bound] if bound else found)]
 
 
 def _jsonl_rows(path: Path) -> list[dict]:
@@ -811,11 +817,15 @@ def _scan_transcripts(
     contribution,
     state_dir: Path | None = None,
     pattern: str = "*.jsonl",
+    include=None,
+    siblings=None,
 ) -> tuple[list[dict], dict]:
     """Per-file contributions for files touched inside the window, reusing the cache.
 
     `pattern` is the file kind a provider keeps its history in: JSONL rollouts for Claude, Codex and
-    Command Code, plain JSON documents for Cline.
+    Command Code, plain JSON documents for Cline. `include` keeps only the files that stand for a
+    unit of history, before the file cap applies. `siblings` names every file a contribution reads
+    besides its own, so a change to any of them refreshes the cached contribution.
     """
     cache = _load_stats_cache(state_dir)
     entries = cache["files"]
@@ -823,26 +833,38 @@ def _scan_transcripts(
     out: list[dict] = []
     seen: set[str] = set()
     scanned = cached = 0
-    for path in _recent_files(base, pattern, cutoff):
+    for path in _recent_files(base, pattern, cutoff, include):
         key = str(path)
         seen.add(key)
         try:
             info = path.stat()
         except OSError:
             continue
+        signature = _stat_signature(siblings(path)) if siblings else None
         hit = entries.get(key)
         if (
             isinstance(hit, dict)
             and hit.get("size") == info.st_size
             and hit.get("mtime") == info.st_mtime
+            and hit.get("siblings") == signature
         ):
             out.append(hit)
             cached += 1
             continue
-        fresh = _json_safe(contribution(path, now))
+        raw = contribution(path, now)
+        fresh = _json_safe(raw)
         fresh["size"] = info.st_size
         fresh["mtime"] = info.st_mtime
-        entries[key] = fresh
+        if signature is not None:
+            fresh["siblings"] = signature
+        if raw.get("partial"):
+            fresh["partial"] = True  # the reader counted only part of the file, and says so
+        # A reader may defer a future-dated row until the next refresh. Do not
+        # permanently cache a partial contribution even if the file stays unchanged.
+        if raw.get("cacheable", True):
+            entries[key] = fresh
+        else:
+            entries.pop(key, None)
         out.append(fresh)
         scanned += 1
     # Forget files that vanished or aged out — but only under this base, since the cache is shared.
@@ -1181,6 +1203,245 @@ def _absorb(parts: list[dict], now: datetime) -> _Stats:
     return stats
 
 
+PI_ALIASES = {
+    "commandcode": "command-code",
+    "command-code": "command-code",
+    "clinepass": "clinepass",
+    "opencode-go": "opencode-go",
+    "openai-codex": "codex",
+}
+
+
+def _pi_provider(value: object) -> str | None:
+    return PI_ALIASES.get(value) if isinstance(value, str) else None
+
+
+def _pi_time(raw: object) -> datetime | None:
+    """A Pi timestamp (epoch milliseconds or ISO 8601) as an aware datetime, else None."""
+    try:
+        when = (
+            datetime.fromtimestamp(raw / 1000, timezone.utc)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+            else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        )
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+    return when if when.tzinfo is not None else None
+
+
+def _pi_usage(u: dict, model: object, when: datetime, session_id: str, stats: "_Stats") -> None:
+    """Add one Pi usage record (an assistant reply's, or a row-level entry's) to `stats`."""
+    inp = _num(u.get("input")) or 0
+    out = _num(u.get("output")) or 0
+    cr = _num(u.get("cacheRead")) or 0
+    cw = _num(u.get("cacheWrite")) or 0
+    tot = _int(_num(u.get("totalTokens")) or sum((inp, out, cr, cw)))
+    bucket = {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "cache_read_tokens": cr,
+        "cache_write_tokens": cw,
+        "total_tokens": tot,
+    }
+    if isinstance(model, str) and "/" in model:
+        model = model.split("/", 1)[1]
+    stats.add_tokens(when, session_id, model, bucket, tot)
+
+
+def _pi_contribution_for(provider: str):
+    def contribution(path: Path, now: datetime, copied: frozenset = frozenset()) -> dict:
+        """One Pi session's contribution for `provider`.
+
+        `copied` holds the IDs of the entries this session copied from a scanned ancestor when it
+        was forked or cloned: the ancestor counts them, so here they only say which model is in
+        use. A row dated after `now` waits for its time, and the result then says it must not be
+        cached, so a later refresh counts it.
+        """
+        cutoff = now - timedelta(days=STATS_DAYS)
+        session_id = path.stem
+        stats = _Stats("")
+        pending_prompts = []
+        deferred = False
+        # The model in use: the latest model switch or the model that last answered. A compaction
+        # or branch summary carries usage but names no model; the model in use made it.
+        active: tuple = (None, None)
+        try:
+            with path.open(encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("type") == "session":
+                        session_id = str(row.get("id") or session_id)
+                        continue
+                    if row.get("type") == "model_change":
+                        active = (_pi_provider(row.get("provider")), row.get("modelId"))
+                        continue
+                    inherited = isinstance(row.get("id"), str) and row["id"] in copied
+                    m = row.get("message")
+                    if row.get("type") != "message" and isinstance(row.get("usage"), dict):
+                        # Usage that is not an assistant message (a `usage` entry, a compaction, a
+                        # branch summary) still counts toward the session's tokens, per Pi's
+                        # session format. It adds no prompt and leaves pending prompts in place.
+                        if inherited:
+                            continue
+                        prov, model = active
+                        if isinstance(row.get("provider"), str):
+                            prov, model = _pi_provider(row.get("provider")), row.get("model")
+                        when = _pi_time(row.get("timestamp"))
+                        if when is not None and when > now:
+                            deferred = True
+                        elif prov == provider and when is not None and when >= cutoff:
+                            _pi_usage(row["usage"], model, when, session_id, stats)
+                        continue
+                    if row.get("type") != "message" or not isinstance(m, dict):
+                        continue
+                    if m.get("role") == "assistant":
+                        active = (_pi_provider(m.get("provider")), m.get("model"))
+                    if inherited:
+                        continue
+                    when = _pi_time(row.get("timestamp") or m.get("timestamp"))
+                    if when is None or when < cutoff:
+                        continue
+                    if when > now:
+                        # The prompts this reply answered wait with it.
+                        deferred = True
+                        if m.get("role") == "assistant":
+                            pending_prompts = []
+                        continue
+                    role = m.get("role")
+                    if role == "user":
+                        pending_prompts.append(when)
+                    elif role == "assistant":
+                        if _pi_provider(m.get("provider")) == provider:
+                            for pw in pending_prompts:
+                                stats.add_prompt(pw, session_id)
+                            u = m.get("usage")
+                            _pi_usage(u if isinstance(u, dict) else {}, m.get("model"), when, session_id, stats)
+                        pending_prompts = []
+        except OSError:
+            pass
+        return {"days": stats.days, "models": stats.models, "cacheable": not deferred}
+
+    return contribution
+
+
+def _pi_source() -> str:
+    """The Pi session directory as a source label."""
+    return pi_activity.display(pi_activity.sessions_dir())
+
+
+def _pi_followed(result: dict) -> dict:
+    """`result`, saying so when a relative Pi setting keeps some of Pi's sessions out of it.
+
+    Pi resolves a relative session directory from the folder each session starts in, which a
+    collector cannot know, so only Pi's default directory is read. The note leads, because a note
+    is cut to one line, and `scan.pi_unfollowed` names the setting.
+    """
+    setting = pi_activity.sessions_location()[1]
+    if setting is None:
+        return result
+    note = pi_activity.unfollowed_note(setting)
+    result["note"] = _scrub(f"{note} {result['note']}" if result.get("note") else note)
+    scan = result.get("scan")
+    result["scan"] = {**(scan if isinstance(scan, dict) else {}), "pi_unfollowed": setting}
+    return result
+
+
+def _resolved_path(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return str(path)
+
+
+def _pi_share(pi_parts: list[dict], now: datetime) -> dict:
+    """How much of a merged history came from Pi sessions.
+
+    The value ranking (`subscription_value.attach`) adds Pi turns to every provider's own prompts.
+    A history that already holds them says so here, so the same Pi turns are not counted twice.
+    """
+    pi = _absorb(pi_parts, now)
+    sessions: set = set()
+    for row in pi.days.values():
+        sessions |= row["sessions"]
+    return {
+        "pi_prompts": sum(_int(row["prompts"]) for row in pi.days.values()),
+        "pi_sessions": len(sessions),
+    }
+
+
+def _scan_pi_transcripts(
+    provider: str,
+    now: datetime,
+    state_dir: Path | None = None,
+    base: Path | None = None,
+) -> tuple[list[dict], dict]:
+    """Scan Pi coding agent session files for tokens/prompts attributed to provider.
+
+    The files are where Pi writes them (`pi_activity.sessions_dir`). A forked or cloned session's
+    copies of a scanned ancestor's entries count once, in the ancestor, so a cached contribution
+    also depends on which of its ancestors are scanned and on their files. The file cap keeps the
+    newest files, and every ancestor of theirs in the window too, so a cap never makes several
+    forks count the history of an ancestor it left out.
+    """
+    base = base or pi_activity.sessions_dir()
+    if not base.is_dir():
+        return [], {"files_scanned": 0, "files_cached": 0}
+    cache = _load_stats_cache(state_dir)
+    entries = cache["files"]
+    cutoff = (now - timedelta(days=STATS_DAYS)).timestamp()
+    out: list[dict] = []
+    seen: set[str] = set()
+    scanned = cached = 0
+    contribution_fn = _pi_contribution_for(provider)
+    prefix = f"pi:{provider}:"
+    candidates = _recent_files(base, "*.jsonl", cutoff, limit=0)
+    files = pi_activity.with_ancestors(candidates[:STATS_MAX_FILES], candidates)
+    lineage = pi_activity.Lineage(files)
+    for path in files:
+        key = prefix + str(path)
+        seen.add(key)
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        ancestors = lineage.ancestors(path)
+        signature = "|".join(f"{_resolved_path(a)}:{_stat_signature([a])}" for a in ancestors)
+        hit = entries.get(key)
+        if (
+            isinstance(hit, dict)
+            and hit.get("size") == info.st_size
+            and hit.get("mtime") == info.st_mtime
+            and hit.get("ancestors") == signature
+        ):
+            out.append(hit)
+            cached += 1
+            continue
+        raw = contribution_fn(path, now, lineage.inherited(ancestors))
+        fresh = _json_safe(raw)
+        fresh["size"] = info.st_size
+        fresh["mtime"] = info.st_mtime
+        fresh["ancestors"] = signature
+        # A contribution holding a future-dated row is recounted at the next refresh.
+        if raw.get("cacheable", True):
+            entries[key] = fresh
+        else:
+            entries.pop(key, None)
+        out.append(fresh)
+        scanned += 1
+    for key in [k for k in entries if k.startswith(prefix) and k not in seen]:
+        entries.pop(key, None)
+    cache["files"] = entries
+    _save_stats_cache(cache, state_dir)
+    return out, {"files_scanned": scanned, "files_cached": cached}
+
+
 def scan_claude_stats(
     now: datetime | None = None,
     root: Path | str | None = None,
@@ -1257,10 +1518,22 @@ def scan_command_code_stats(
     now = now or _now()
     base = Path(root) if root else Path(os.path.expanduser("~/.commandcode/projects"))
     parts, scan = _scan_transcripts(base, now, _command_code_contribution, state_dir)
+    pi_included = False
+    if root is None:
+        pi_parts, pi_scan = _scan_pi_transcripts("command-code", now, state_dir)
+        if pi_parts:
+            parts.extend(pi_parts)
+            scan = {
+                "files_scanned": scan["files_scanned"] + pi_scan["files_scanned"],
+                "files_cached": scan["files_cached"] + pi_scan["files_cached"],
+                **_pi_share(pi_parts, now),
+            }
+            pi_included = True
     stats = _absorb(parts, now)
-    stats.source = "~/.commandcode/projects"
+    stats.source = "~/.commandcode/projects" + (" + " + _pi_source() if pi_included else "")
     stats.scan = scan
-    return stats.finish(now)
+    result = stats.finish(now)
+    return _pi_followed(result) if root is None else result
 
 
 def _opencode_db_path() -> Path:
@@ -1285,64 +1558,166 @@ def _stat_signature(paths: list[Path]) -> str:
         except OSError:
             parts.append(f"{path.name}:absent")
             continue
-        parts.append(f"{path.name}:{info.st_size}:{_int(info.st_mtime)}")
+        # Nanoseconds: a rewrite with as many bytes within the same second still moves the key.
+        parts.append(f"{path.name}:{info.st_size}:{info.st_mtime_ns}")
     return "|".join(parts)
 
 
-def _opencode_contribution(path: Path, now: datetime) -> dict:
-    """OpenCode's own database, read read-only: tokens and model per assistant reply.
+OPENCODE_GO = "opencode-go"
 
-    OpenCode keeps sessions in SQLite rather than in transcripts, and `message.data` is a JSON
-    blob per message: assistant rows carry
-    `tokens.{total,input,output,reasoning,cache.read,cache.write}` and a `modelID`, while the user
-    rows are the prompts. The provider's own `total` is used as given rather than re-derived.
+
+def _opencode_bucket(tokens: dict) -> tuple[dict, int]:
+    """A reply's buckets and total: OpenCode's own `total` where it stored one, else every bucket.
+
+    OpenCode keeps `reasoning` beside `output`, and its own `total` adds both. Reasoning is output
+    the model generated, so it is counted in `output_tokens`, the way Codex reports it.
+    """
+    raw_cache = tokens.get("cache")
+    cache = raw_cache if isinstance(raw_cache, dict) else {}
+    bucket = {
+        "input_tokens": _num(tokens.get("input")) or 0,
+        "output_tokens": (_num(tokens.get("output")) or 0) + (_num(tokens.get("reasoning")) or 0),
+        "cache_read_tokens": _num(cache.get("read")) or 0,
+        "cache_write_tokens": _num(cache.get("write")) or 0,
+    }
+    total = _int(tokens.get("total")) or _int(sum(bucket.values()))
+    bucket["total_tokens"] = total
+    return bucket, total
+
+
+def _opencode_payload(created, data) -> tuple[datetime | None, dict | None]:
+    when = _from_epoch(created, "ms")
+    if when is None:
+        return None, None
+    try:
+        payload = json.loads(data)
+    except (TypeError, ValueError):
+        return None, None
+    return (when, payload) if isinstance(payload, dict) else (None, None)
+
+
+def _opencode_provider(payload: dict) -> str | None:
+    """The provider a message names: `providerID` on a v1 reply, `model.providerID` on a v1 prompt
+    and a v2 reply. A v2 prompt names none."""
+    provider = payload.get("providerID")
+    if not isinstance(provider, str) or not provider:
+        model = payload.get("model")
+        provider = model.get("providerID") if isinstance(model, dict) else None
+    return provider if isinstance(provider, str) and provider else None
+
+
+def _opencode_model(payload: dict) -> str | None:
+    """The model a reply names: `modelID` in v1, `model.id` in v2."""
+    model = payload.get("modelID")
+    if isinstance(model, str) and model:
+        return model
+    raw = payload.get("model")
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get("modelID")
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _opencode_count(stats: "_Stats", rows) -> None:
+    """Count the prompts and replies OpenCode Go answered, from one table's rows in session order.
+
+    `rows` are `(session, when, kind, payload)`, each session's in the order it was written. A
+    prompt counts for the provider it names (a v1 prompt names its selected model's), else for
+    the provider of the first reply after it (a v2 prompt names none). A prompt with no reply yet
+    waits: the reply changes the database, and the next read counts it. Other providers' prompts
+    and replies, local models' included, are not OpenCode Go usage.
+    """
+    current, waiting = None, []
+    for session, when, kind, payload in rows:
+        if session != current:
+            current, waiting = session, []
+        provider = _opencode_provider(payload)
+        if kind == "user":
+            if provider is None:
+                waiting.append(when)
+            elif provider == OPENCODE_GO:
+                stats.add_prompt(when, session)
+            continue
+        if kind != "assistant":
+            continue
+        if provider == OPENCODE_GO:
+            for asked in waiting:
+                stats.add_prompt(asked, session)
+            raw_tokens = payload.get("tokens")
+            if isinstance(raw_tokens, dict):
+                bucket, total = _opencode_bucket(raw_tokens)
+                stats.add_tokens(when, session, _opencode_model(payload), bucket, total)
+        waiting = []
+
+
+def _opencode_rows(rows, kind_of):
+    """`(session, when, kind, payload)` for each row whose time and JSON parse."""
+    for session_id, created, msg_type, data in rows:
+        when, payload = _opencode_payload(created, data)
+        if payload is not None:
+            yield str(session_id or ""), when, kind_of(msg_type, payload.get("role")), payload
+
+
+def _opencode_kind(msg_type, role) -> str | None:
+    if "user" in (msg_type, role):
+        return "user"
+    return "assistant" if "assistant" in (msg_type, role) else None
+
+
+def _opencode_contribution(path: Path, now: datetime) -> dict:
+    """OpenCode Go's prompts, and tokens and model per reply, from OpenCode's own database.
+
+    OpenCode keeps sessions in SQLite rather than in transcripts. In v2 (`session_message` table),
+    replies carry tokens in `data.tokens` and the model and provider in `data.model`, and prompts
+    name no provider. In v1 (`message` table), replies carry tokens, `modelID` and `providerID` in
+    `data`, and prompts their selected model's provider. A database in the middle of the v2 cutover
+    has both tables, and both are read (each message once, by id). OpenCode serves every provider
+    it is configured with; only what OpenCode Go answered is counted (`_opencode_count`).
 
     Opened `mode=ro`: a running OpenCode holds the write lock and a WAL, and this never writes to
-    the database. A row whose JSON does not parse is skipped, never guessed at.
+    the database. A row whose JSON does not parse is skipped, never guessed at. A row dated after
+    `now` (a skewed clock) waits for its time, and a contribution that left one out is not cached,
+    so a later refresh counts it.
     """
     stats = _Stats("")
     cutoff_ms = _int((now - timedelta(days=STATS_DAYS)).timestamp() * 1000)
+    now_ms = _int(now.timestamp() * 1000)
+    deferred = False
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)  # read-only; never writes
     try:
-        for session_id, created, data in con.execute(
-            "SELECT session_id, time_created, data FROM message WHERE time_created >= ?",
-            (cutoff_ms,),
-        ):
-            when = _from_epoch(created, "ms")
-            if when is None:
-                continue
-            try:
-                payload = json.loads(data)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            session = str(session_id or "")
-            raw_tokens = payload.get("tokens")
-            tokens = raw_tokens if isinstance(raw_tokens, dict) else None
-            model = payload.get("modelID")
-            if not isinstance(model, str) or not model:
-                raw_model = payload.get("model")
-                model = (
-                    raw_model.get("modelID") if isinstance(raw_model, dict) else None
-                )
-            if tokens is not None:
-                raw_cache = tokens.get("cache")
-                cache = raw_cache if isinstance(raw_cache, dict) else {}
-                bucket = {
-                    "input_tokens": _num(tokens.get("input")) or 0,
-                    "output_tokens": _num(tokens.get("output")) or 0,
-                    "cache_read_tokens": _num(cache.get("read")) or 0,
-                    "cache_write_tokens": _num(cache.get("write")) or 0,
-                }
-                total = _int(tokens.get("total")) or _int(sum(bucket.values()))
-                bucket["total_tokens"] = total
-                stats.add_tokens(when, session, model, bucket, total)
-            if str(payload.get("role")) == "user":
-                stats.add_prompt(when, session)
+        tables = {
+            name
+            for (name,) in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('message', 'session_message')"
+            )
+        }
+        if "session_message" in tables:
+            query = (
+                "SELECT session_id, time_created, type, data FROM session_message "
+                "WHERE time_created >= ? AND time_created <= ? ORDER BY session_id, seq"
+            )
+            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind))
+            deferred = con.execute(
+                "SELECT EXISTS (SELECT 1 FROM session_message WHERE time_created > ?)", (now_ms,)
+            ).fetchone()[0]
+        # OpenCode keeps the v1 `message` rows through the v2 cutover, and its migration copies each
+        # one into `session_message` under the same id. So both are read: a v1 row counts only when
+        # v2 lacks its id, which keeps sessions that live only in v1 without counting migrated ones
+        # twice. A database with neither table raises here, as it always did.
+        if "message" in tables or "session_message" not in tables:
+            query = "SELECT session_id, time_created, NULL, data FROM message WHERE time_created >= ? AND time_created <= ?"
+            if "session_message" in tables:
+                query += " AND id NOT IN (SELECT id FROM session_message)"
+            query += " ORDER BY session_id, time_created, id"
+            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind))
+            deferred = deferred or con.execute(
+                "SELECT EXISTS (SELECT 1 FROM message WHERE time_created > ?)", (now_ms,)
+            ).fetchone()[0]
     finally:
         con.close()
-    return {"days": stats.days, "models": stats.models}
+    result = {"days": stats.days, "models": stats.models}
+    if deferred:
+        result["cacheable"] = False
+    return result
 
 
 def scan_opencode_stats(
@@ -1354,11 +1729,19 @@ def scan_opencode_stats(
     now = now or _now()
     db = Path(root) if root else _opencode_db_path()
     if not db.is_file():
-        return _no_stats(
+        if root is None:
+            pi_parts, pi_scan = _scan_pi_transcripts("opencode-go", now, state_dir)
+            if pi_parts:
+                stats = _absorb(pi_parts, now)
+                stats.source = _pi_source()
+                stats.scan = {**pi_scan, **_pi_share(pi_parts, now)}
+                return _pi_followed(stats.finish(now))
+        missing = _no_stats(
             "",
             {},
             f"OpenCode keeps its sessions in {db}, which does not exist on this machine",
         )
+        return _pi_followed(missing) if root is None else missing
     cache = _load_stats_cache(state_dir)
     key = str(db)
     signature = _stat_signature([db, Path(f"{db}-wal")])
@@ -1367,15 +1750,35 @@ def scan_opencode_stats(
         contribution = entry
         scan = {"files_scanned": 0, "files_cached": 1}
     else:
-        contribution = _json_safe(_opencode_contribution(db, now))
+        raw = _opencode_contribution(db, now)
+        contribution = _json_safe(raw)
         contribution["signature"] = signature
-        cache["files"][key] = contribution
+        # A contribution that left a future-dated row out is counted again at the next refresh.
+        if raw.get("cacheable", True):
+            cache["files"][key] = contribution
+        else:
+            cache["files"].pop(key, None)
         _save_stats_cache(cache, state_dir)
         scan = {"files_scanned": 1, "files_cached": 0}
-    stats = _absorb([contribution], now)
-    stats.source = "~/.local/share/opencode/opencode.db"
+    parts = [contribution]
+    pi_included = False
+    if root is None:
+        pi_parts, pi_scan = _scan_pi_transcripts("opencode-go", now, state_dir)
+        if pi_parts:
+            parts.extend(pi_parts)
+            scan = {
+                "files_scanned": scan["files_scanned"] + pi_scan["files_scanned"],
+                "files_cached": scan["files_cached"] + pi_scan["files_cached"],
+                **_pi_share(pi_parts, now),
+            }
+            pi_included = True
+    stats = _absorb(parts, now)
+    stats.source = "~/.local/share/opencode/opencode.db" + (
+        " + " + _pi_source() if pi_included else ""
+    )
     stats.scan = scan
-    return stats.finish(now)
+    result = stats.finish(now)
+    return _pi_followed(result) if root is None else result
 
 
 def _cline_contribution(path: Path, now: datetime) -> dict:
@@ -1506,6 +1909,14 @@ STATS_SCANNERS = {
     "clinepass": scan_cline_stats,
 }
 
+
+def scan_antigravity_stats(now=None, root=None, state_dir=None):
+    import agy_usage
+    return agy_usage.scan_stats(sys.modules[__name__], now, root, state_dir)
+
+
+STATS_SCANNERS["antigravity"] = scan_antigravity_stats
+
 # Providers TMOS reads no history for. Empty today: all five keep something readable, and this stays
 # as the honest fallback — a provider with no local history must say so rather than draw an empty
 # chart, and a provider added later lands here until its reader exists.
@@ -1598,6 +2009,10 @@ _MISSING = object()
 # endpoint it asks. Display metadata only, never used to read anything — and the selftest asserts
 # every built-in has an entry, so a sixth adapter fails the gate until this table is filled in too.
 BUILTIN_SOURCES = {
+    "antigravity": (
+        "Official agy CLI saved Google sign-in (credentials stay inside agy)",
+        "official agy -p /usage --output-format json (no model turn)",
+    ),
     "claude-code": (
         "~/.claude/.credentials.json [claudeAiOauth.accessToken]",
         "https://api.anthropic.com/api/oauth/usage ($CLAUDE_API_BASE overrides it)",
@@ -1615,7 +2030,8 @@ BUILTIN_SOURCES = {
         "https://api.commandcode.ai/alpha/billing/credits ($COMMAND_CODE_API_BASE overrides it)",
     ),
     "opencode-go": (
-        "~/.local/share/opencode/auth.json [opencode-go.key]",
+        "$OPENCODE_GO_API_KEY or ~/secrets/opencode-go.env, else ~/.local/share/opencode/auth.json or Pi's "
+        "~/.pi/agent/auth.json (an absolute $PI_CODING_AGENT_DIR replaces ~/.pi/agent)",
         "https://opencode.ai/zen/go/v1/usage ($OPENCODE_GO_BASE overrides it)",
     ),
 }
@@ -2368,17 +2784,27 @@ def load_definitions(dirs: list[Path] | None = None) -> tuple[list[dict], list[d
 
 
 def collect_opencode() -> dict:
-    auth = read_json(Path(os.path.expanduser("~/.local/share/opencode/auth.json")))
-    key = None
-    if isinstance(auth, dict):
-        entry = auth.get("opencode-go")
-        if isinstance(entry, dict):
-            key = entry.get("key")
+    key = env_or_file_key(
+        "OPENCODE_GO_API_KEY", [Path(os.path.expanduser("~/secrets/opencode-go.env"))]
+    )
+    if not key:
+        auth = read_json(Path(os.path.expanduser("~/.local/share/opencode/auth.json")))
+        if isinstance(auth, dict):
+            entry = auth.get("opencode-go")
+            if isinstance(entry, dict):
+                key = entry.get("key")
+    pi_auth_path = pi_activity.agent_dir()[0] / "auth.json"
+    if not key:
+        pi_auth = read_json(pi_auth_path)
+        if isinstance(pi_auth, dict):
+            entry = pi_auth.get("opencode-go")
+            if isinstance(entry, dict):
+                key = entry.get("key")
     if not key:
         return unknown(
             "opencode-go",
-            "no opencode-go key in ~/.local/share/opencode/auth.json; "
-            "run `opencode auth login`",
+            "no opencode-go key in ~/secrets/opencode-go.env, ~/.local/share/opencode/auth.json, or "
+            f"{pi_activity.display(pi_auth_path)}; run `opencode auth login`",
             status="unauthenticated",
         )
     base = os.environ.get("OPENCODE_GO_BASE", "https://opencode.ai/zen/go/v1")
@@ -2842,12 +3268,23 @@ def collect_codex() -> dict:
         )
 
 
+def parse_antigravity(payload, now=None):
+    import agy_usage
+    return agy_usage.parse_usage(sys.modules[__name__], payload, now)
+
+
+def collect_antigravity():
+    import agy_usage
+    return agy_usage.collect(sys.modules[__name__])
+
+
 COLLECTORS = {
     "claude-code": collect_claude_code,
     "codex": collect_codex,
     "clinepass": collect_clinepass,
     "command-code": collect_command_code,
     "opencode-go": collect_opencode,
+    "antigravity": collect_antigravity,
 }
 
 
@@ -3445,6 +3882,7 @@ def _selftest() -> int:
             json.dumps(
                 {
                     "role": "assistant",
+                    "providerID": "opencode-go",
                     "modelID": "gpt-5-nano",
                     "tokens": {
                         "total": 11882,
@@ -4008,7 +4446,7 @@ def _probe(
         print(f"provider:   {provider_id}")
         print("origin:     built-in adapter in collector/usage_collector.py")
         print(f"credential: {credential}")
-        print(f"endpoint:   GET {endpoint}")
+        print(f"command:    {endpoint}" if provider_id == "antigravity" else f"endpoint:   GET {endpoint}")
         try:
             row = COLLECTORS[provider_id]()
         except Exception as exc:

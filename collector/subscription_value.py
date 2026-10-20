@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-PROVIDERS = ('claude-code', 'codex', 'clinepass', 'command-code', 'opencode-go')
+PROVIDERS = ('claude-code', 'codex', 'clinepass', 'command-code', 'opencode-go', 'antigravity')
 # Dated published estimates, not billed amounts. Exact plan matching only.
 REFERENCES = {
     ('claude-code', 'default_claude_max_20x'): (200, 'https://support.claude.com/en/articles/11049741-what-is-the-max-plan'),
@@ -112,6 +112,8 @@ def attach(document, directory, now=None):
     import pi_activity
     try: pi = pi_activity.scan(now=now)
     except OSError: pi = {}
+    # Pi's sessions under a relative directory are not read (`pi_activity.sessions_location`).
+    unfollowed = pi_activity.sessions_location()[1]
     # Activity is the useful default while the validated evidence channel is empty.
     document['comparison_mode'] = 'validated' if document['providers'] and all(r.get('economics') for r in document['providers']) else 'activity'
     for row in document['providers']:
@@ -122,17 +124,34 @@ def attach(document, directory, now=None):
         turns = total.get('prompts') if stats.get('available') is True else None
         if type(turns) is not int or turns < 0: turns = None
         pi_counts = pi.get(row['provider'], {})
-        if pi_counts.get('turns'):
-            turns = (turns or 0) + pi_counts['turns']
+        scan = stats.get('scan') if isinstance(stats.get('scan'), dict) else {}
+        # The collector merges Pi sessions into some providers' own history and records how many
+        # prompts came from them (`scan.pi_prompts`). Those Pi turns are counted already.
+        merged = stats.get('available') is True and type(scan.get('pi_prompts')) is int and scan['pi_prompts'] >= 0
+        if merged:
+            pi_turns = scan['pi_prompts']
+            cli_turns = max(0, turns - pi_turns) if turns is not None else None
+            sessions = total.get('sessions') or 0
+            source = str(stats.get('source') or '')
+        else:
+            pi_turns = pi_counts.get('turns', 0)
+            if pi_counts.get('turns'):
+                turns = (turns or 0) + pi_counts['turns']
+            cli_turns = total.get('prompts') if stats.get('available') else None
+            sessions = (total.get('sessions') or 0) + pi_counts.get('sessions', 0) if stats.get('available') or pi_counts else None
+            source = str(stats.get('source') or '') + (' + ' + pi_activity.display(pi_activity.sessions_dir()) if pi_counts.get('turns') else '')
+        reason = ('Set your subscription price in this provider tab.' if price is None else
+                  'No observed local turns available.' if turns is None else
+                  'Provisional: observed local turns / monthly subscription fee; incomplete harness coverage. Not task quality or cost per completed task.')
+        if unfollowed is not None and row['provider'] in set(pi_activity.ALIASES.values()):
+            reason += ' ' + pi_activity.unfollowed_note(unfollowed)
         row['activity'] = {'observed_turns': turns,
-                           'pi_turns': pi_counts.get('turns', 0),
-                           'cli_turns': total.get('prompts') if stats.get('available') else None, 'observed_sessions': (total.get('sessions') or 0) + pi_counts.get('sessions', 0) if stats.get('available') or pi_counts else None,
+                           'pi_turns': pi_turns,
+                           'cli_turns': cli_turns, 'observed_sessions': sessions,
                            'window_days': stats.get('coverage_days') or (30 if pi_counts else None), 'price': price,
-                           'source': str(stats.get('source') or '') + (' + ~/.pi/agent/sessions' if pi_counts.get('turns') else ''),
+                           'source': source,
                            'first_date': total.get('first_date'), 'last_date': total.get('last_date'),
-                           'reason': ('Set your subscription price in this provider tab.' if price is None else
-                                      'No observed local turns available.' if turns is None else
-                                      'Provisional: observed local turns / monthly subscription fee; incomplete harness coverage. Not task quality or cost per completed task.')}
+                           'reason': reason}
         row['economics_reason'] = ('Validated outcome and recognized-spend receipts connected.' if row.get('economics') else
                                    'Validated task outcomes and matched recognized spend are not connected. Request success does not establish task validation.')
 

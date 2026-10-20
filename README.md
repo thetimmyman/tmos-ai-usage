@@ -35,7 +35,7 @@ Expanding a row adds, for that provider only:
 ## Supported providers
 
 Nothing is hardcoded to a subscription you do not have: a provider appears when its CLI or key is
-configured, and disappears when it is not. The five below are built in; anything else that publishes
+configured. The six below are built in; anything else that publishes
 a simple usage or balance JSON at one endpoint can be added as data, without a release — see
 [Adding a provider](#adding-a-provider).
 
@@ -46,6 +46,32 @@ a simple usage or balance JSON at one endpoint can be added as data, without a r
 | ClinePass | Cline's usage-limits meter, falling back to caps + charge ledger | — | — |
 | Command Code | 5h + weekly meters, monthly credit pool | prepaid credit pool | — |
 | OpenCode Go | OpenCode Zen usage endpoint | — | — |
+| Google AI / Antigravity | Official `agy -p /usage --output-format json`, with separate Gemini and Claude/GPT quota groups | — | Local Antigravity canonical transcript exports |
+
+Antigravity requires the official `agy` CLI version 1.3.5 or newer and a saved Google
+subscription sign-in. Run `agy` interactively once, then refresh AI Usage. Quota checks
+are answered by the CLI itself without a model turn, and run with the CLI's
+self-updater switched off (`AGY_CLI_DISABLE_AUTO_UPDATE=true`), so a scheduled read never
+changes the installed CLI. Each check gives agy one log file, `agy-cli.log` in the AI Usage
+state directory, rewritten every run; a release without `--log-file` is reported as needing an
+update and is not run, since every check would leave another log in agy's own folder. The collapsed meters show the
+Gemini group's limits; expand the row for each group's separate allowances and resets.
+The CLI does not report your subscription tier or fee. Confirm your actual fee in its
+provider tab for activity comparisons; no Google AI Pro price is assumed.
+
+Local activity includes `agy` called through Pi's shell tool. A conversation's full and
+summary exports are both read, and each numbered step counts once. Either export can be
+truncated or left behind at a checkpoint, so neither is trusted alone. If they disagree about
+a step they both hold, only one export counts: the one with more steps, and on a tie the one whose
+newest step is the latest, then the one written last. Chunk copies are excluded.
+A transcript over 32 MiB is read from its most recent 32 MiB, and
+the activity note then says the history is incomplete. Only explicit user-input counts, dates, hashed
+conversation identities, and reported input/output counters enter the provider record.
+The private incremental scanner cache also retains source-file paths.
+Prompt/response content is discarded. Model names and cache/input overlap are not
+specified by this export, so no model breakdown is inferred and cache counts are not
+added to token totals. History is incomplete and may include previous sign-ins; current
+Gemini API mode is excluded from subscription activity. Activity grants no task validation.
 
 ## How it works
 
@@ -53,7 +79,7 @@ Two halves, deliberately:
 
 | Half | What it is | What it may do |
 | --- | --- | --- |
-| `collector/usage_collector.py` | python3, standard library only | reads each provider's own usage endpoint with the credential that provider's CLI already stores, read-only; writes one file |
+| `collector/usage_collector.py` | python3, standard library only | reads first-party usage endpoints or delegates read-only checks to the official CLI; writes one file |
 | the QML | Quickshell plugin | reads that one file. **No network, no credentials, no endpoints in the shell process.** |
 
 Every number on screen can be traced to a line in the collector. A number the collector could not
@@ -102,7 +128,7 @@ omarchy bar move tmos.usage --section right
 
 ## Adding a provider
 
-The five providers above are built in. A sixth does **not** need a release, as long as its whole
+The six providers above are built in. Another does **not** need a release, as long as its whole
 reading is *one endpoint, one JSON document and a path to a number*: write a definition instead.
 The format is deliberately narrower than the built-ins — it is an extension path, not a
 replacement for them, and [the table below](#what-still-needs-code) is the honest boundary.
@@ -154,7 +180,7 @@ the built-in Codex adapter reads.
 
 | Directory | Purpose |
 | --- | --- |
-| `<plugin>/providers.d/*.json` | ships with the plugin. Empty by default: the five built-ins are code. |
+| `<plugin>/providers.d/*.json` | ships with the plugin. Empty by default: the built-ins are code. |
 | `~/.config/tmos-ai-usage/providers.d/*.json` | where your definitions go. |
 
 `TMOS_USAGE_PROVIDERS_DIR` (a colon-separated list) replaces both, which is how the test suite and
@@ -221,7 +247,7 @@ rejected has one under `collector/fixtures/providers.reject.d/`.
 
 ### What still needs code
 
-Every one of the five built-in providers needs at least one row from that second half, which is
+Every built-in provider needs at least one row from that second half, which is
 exactly why they stay code — and why "any provider" would be an over-claim:
 
 - **Claude Code** — its healthy read is expressible, but the local transcript fallback that keeps a

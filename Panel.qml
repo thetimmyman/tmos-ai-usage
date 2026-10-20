@@ -491,6 +491,19 @@ Ui.Panel {
                                                     font.family: root.fontFamily
                                                     font.pixelSize: Style.font.caption
                                                 }
+
+                                                MouseArea {
+                                                    id: chipHover
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    acceptedButtons: Qt.NoButton
+                                                }
+
+                                                Ui.PanelToolTip {
+                                                    visible: chipHover.containsMouse && !!chip.win
+                                                    text: Model.windowTooltip(chip.win, root.nowMs)
+                                                    fontFamily: root.fontFamily
+                                                }
                                             }
                                         }
                                     }
@@ -504,7 +517,7 @@ Ui.Panel {
                                 width: parent.width
                                 spacing: Style.spacing.sm
 
-                                // Limits, full width, with the reset countdown the chips cannot fit.
+                                // Limits, full width, with reset occurrence and countdown.
                                 Repeater {
                                     model: ["5h", "week", "month"]
 
@@ -532,12 +545,41 @@ Ui.Panel {
                                             font.pixelSize: Style.font.caption
                                         }
 
+                                        Text {
+                                            id: resetLabel
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: Math.min(implicitWidth, parent.width - windowLabel.width - percentLabel.width - Style.space(70))
+                                            horizontalAlignment: Text.AlignRight
+                                            textFormat: Text.PlainText
+                                            text: Model.resetText(windowRow.win, root.nowMs)
+                                            color: root.dim
+                                            font.family: root.fontFamily
+                                            font.pixelSize: Style.font.caption
+                                            elide: Text.ElideRight
+                                        }
+
+                                        Text {
+                                            id: percentLabel
+                                            anchors.right: resetLabel.left
+                                            anchors.rightMargin: Style.space(6)
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: Style.space(34)
+                                            horizontalAlignment: Text.AlignRight
+                                            textFormat: Text.PlainText
+                                            text: Model.percentText(windowRow.win)
+                                            color: root.toneColor(windowRow.tone)
+                                            font.family: root.fontFamily
+                                            font.pixelSize: Style.font.caption
+                                        }
+
                                         Rectangle {
                                             id: track
                                             anchors.left: windowLabel.right
                                             anchors.leftMargin: Style.space(4)
+                                            anchors.right: percentLabel.left
+                                            anchors.rightMargin: Style.space(6)
                                             anchors.verticalCenter: parent.verticalCenter
-                                            width: Math.max(Style.space(60), parent.width - windowLabel.width - percentLabel.width - resetLabel.width - Style.space(20))
                                             height: Style.space(4)
                                             radius: height / 2
                                             color: Style.normalFill
@@ -553,31 +595,32 @@ Ui.Panel {
                                             }
                                         }
 
-                                        Text {
-                                            id: percentLabel
-                                            anchors.right: resetLabel.left
-                                            anchors.rightMargin: Style.space(6)
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            textFormat: Text.PlainText
-                                            text: Model.percentText(windowRow.win)
-                                            color: root.toneColor(windowRow.tone)
-                                            font.family: root.fontFamily
-                                            font.pixelSize: Style.font.caption
+                                        MouseArea {
+                                            id: windowHover
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            acceptedButtons: Qt.NoButton
                                         }
 
-                                        Text {
-                                            id: resetLabel
-                                            anchors.right: parent.right
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            width: Style.space(96)
-                                            horizontalAlignment: Text.AlignRight
-                                            textFormat: Text.PlainText
-                                            text: Model.resetText(windowRow.win)
-                                            color: root.dim
-                                            font.family: root.fontFamily
-                                            font.pixelSize: Style.font.caption
-                                            elide: Text.ElideRight
+                                        Ui.PanelToolTip {
+                                            visible: windowHover.containsMouse && !!windowRow.win
+                                            text: Model.windowTooltip(windowRow.win, root.nowMs)
+                                            fontFamily: root.fontFamily
                                         }
+                                    }
+                                }
+
+                                Repeater {
+                                    model: providerRow.provider.quotaGroups || []
+                                    delegate: Text {
+                                        required property var modelData
+                                        width: detail.width
+                                        textFormat: Text.PlainText
+                                        text: modelData.name + "\n" + Model.quotaGroupDetail(modelData, root.nowMs)
+                                        wrapMode: Text.Wrap
+                                        color: root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
                                     }
                                 }
 

@@ -376,6 +376,20 @@ Rectangle {
                 visible: root.selected !== null
                 width: parent.width
                 spacing: Style.space(12)
+                Label {
+                    visible: root.selected !== null && root.selected.quotaGroups.length > 0
+                    text: "MODEL QUOTAS"; color: Color.accent; font.bold: true
+                }
+                Repeater {
+                    model: root.selected ? root.selected.quotaGroups : []
+                    delegate: Label {
+                        required property var modelData
+                        objectName: "quotaGroup-" + modelData.name
+                        width: parent.width
+                        color: root.secondary
+                        text: modelData.name + "\n" + Model.quotaGroupDetail(modelData, root.nowMs)
+                    }
+                }
                 Label { text: "SUBSCRIPTION PRICE"; color: Color.accent; font.bold: true }
                 Label {
                     width: parent.width

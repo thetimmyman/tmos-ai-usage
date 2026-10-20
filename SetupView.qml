@@ -21,8 +21,8 @@ Rectangle {
     signal closeRequested()
 
     function providerRows() {
-        var ids = ["claude-code", "codex", "clinepass", "command-code", "opencode-go"]
-        var labels = ["Claude Code", "Codex", "ClinePass", "Command Code", "OpenCode Go"]
+        var ids = ["claude-code", "codex", "clinepass", "command-code", "opencode-go", "antigravity"]
+        var labels = ["Claude Code", "Codex", "ClinePass", "Command Code", "OpenCode Go", "Google AI / Antigravity"]
         var rows = [], i, row
         for (i = 0; i < root.providers.length; i++) rows.push(root.providers[i])
         for (i = 0; i < ids.length; i++) {
