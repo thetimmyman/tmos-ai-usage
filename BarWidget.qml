@@ -16,6 +16,7 @@
 import QtQuick
 import Quickshell
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -24,7 +25,7 @@ BarWidget {
 
     moduleName: "tmos.usage"
 
-    readonly property color foreground: bar ? bar.barForeground : Color.foreground
+    readonly property color foreground: bar ? bar.barForeground : Commons.Color.foreground
     readonly property color dim: Qt.darker(root.foreground, 1.35)
 
     // ---- forwarded panel lifecycle -------------------------------------------------------------
@@ -84,8 +85,8 @@ BarWidget {
     // One token per tone. Omarchy publishes foreground/accent/urgent/muted; "warn" borrows accent
     // rather than inventing a colour the theme never chose.
     function toneColor(tone) {
-        if (tone === "urgent") return Color.urgent;
-        if (tone === "warn") return Color.accent;
+        if (tone === "urgent") return Commons.Color.urgent;
+        if (tone === "warn") return Commons.Color.accent;
         if (tone === "muted") return root.dim;
         return root.foreground;
     }
@@ -128,6 +129,7 @@ BarWidget {
         id: button
         anchors.fill: parent
         bar: root.bar
+        horizontalMargin: Style.spacing.xxl
         text: Model.barTextFor(root.focusedProvider)
         tooltipText: Model.tooltip(root.providers, source.observedAt, root.nowMs)
         active: root.opened

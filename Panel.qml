@@ -16,6 +16,7 @@ import QtQuick
 import QtQuick.Controls
 import Quickshell
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui as Ui
 import "Model.js" as Model
 
@@ -45,7 +46,7 @@ Ui.Panel {
     readonly property string loadError: hostWidget ? hostWidget.usageSource.loadError : ""
     readonly property string refreshError: hostWidget ? hostWidget.usageSource.refreshError : ""
 
-    readonly property color foreground: bar ? bar.barForeground : Color.foreground
+    readonly property color foreground: bar ? bar.barForeground : Commons.Color.foreground
     readonly property color dim: Qt.darker(root.foreground, 1.35)
     readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -99,8 +100,8 @@ Ui.Panel {
     // One token per tone. Omarchy publishes foreground/accent/urgent/muted; "warn" borrows accent
     // rather than inventing a colour the theme never chose.
     function toneColor(tone) {
-        if (tone === "urgent") return Color.urgent;
-        if (tone === "warn") return Color.accent;
+        if (tone === "urgent") return Commons.Color.urgent;
+        if (tone === "warn") return Commons.Color.accent;
         if (tone === "muted") return root.dim;
         return root.foreground;
     }
@@ -228,7 +229,7 @@ Ui.Panel {
                 Column {
                     id: body
                     width: scroll.availableWidth
-                    spacing: Style.space(8)
+                    spacing: Style.spacing.panelGap
 
                     // ---- header: what this is, and how fresh it is -------------------------
                     Item {
@@ -243,7 +244,7 @@ Ui.Panel {
                             text: root.providers.length && root.providers[0].rankingMetric === "activity" ? "AI budget · turns/$*" : "AI budget"
                             color: root.foreground
                             font.family: root.fontFamily
-                            font.pixelSize: Style.font.subtitle
+                            font.pixelSize: Style.font.title
                             font.bold: true
                         }
 
@@ -254,7 +255,7 @@ Ui.Panel {
                             textFormat: Text.PlainText
                             text: (root.refreshing ? "reading…" : Model.ageText(root.observedAt, root.nowMs)) + " · R refresh"
                                 
-                            color: root.stale && !root.refreshing ? Color.accent : root.dim
+                            color: root.stale && !root.refreshing ? Commons.Color.accent : root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                         }
@@ -262,9 +263,10 @@ Ui.Panel {
 
                     Rectangle {
                         width: parent.width
-                        height: Style.space(32)
-                        color: Qt.alpha(Color.accent, 0.12)
-                        border.color: Color.accent
+                        height: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+                        radius: Style.cornerRadius
+                        color: Qt.alpha(Commons.Color.accent, 0.12)
+                        border.color: Commons.Color.accent
                         Text {
                             anchors.centerIn: parent
                             text: "Open Inference X-RAY  →"
@@ -276,9 +278,10 @@ Ui.Panel {
                     }
                     Rectangle {
                         width: parent.width
-                        height: Style.space(34)
+                        height: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+                        radius: Style.cornerRadius
                         color: "transparent"
-                        border.color: Color.muted
+                        border.color: Commons.Color.muted
                         Text {
                             anchors.centerIn: parent
                             textFormat: Text.PlainText
@@ -308,7 +311,7 @@ Ui.Panel {
                         visible: root.loadError !== "" || root.refreshError !== ""
                         textFormat: Text.PlainText
                         text: root.refreshError !== "" ? root.refreshError : root.loadError
-                        color: Color.urgent
+                        color: Commons.Color.urgent
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                         wrapMode: Text.WordWrap
@@ -345,7 +348,7 @@ Ui.Panel {
                             Rectangle {
                                 id: rowSurface
                                 width: parent.width
-                                height: rowContent.implicitHeight + Style.spacing.sm * 2
+                                height: rowContent.implicitHeight + Style.spacing.lg * 2
                                 radius: Style.cornerRadius
                                 color: providerRow.expanded
                                     ? Style.selectedFill
@@ -361,7 +364,7 @@ Ui.Panel {
                                 Column {
                                     id: rowContent
                                     anchors.fill: parent
-                                    anchors.margins: Style.spacing.sm
+                                    anchors.margins: Style.spacing.lg
                                     spacing: Style.spacing.xs
 
                                     // name · plan ........................................ today · status · chevron
@@ -653,7 +656,7 @@ Ui.Panel {
                                             anchors.verticalCenter: parent.verticalCenter
                                             textFormat: Text.PlainText
                                             text: providerRow.provider.balance.remainingText
-                                            color: providerRow.provider.balance.alarming ? Color.urgent : root.foreground
+                                            color: providerRow.provider.balance.alarming ? Commons.Color.urgent : root.foreground
                                             font.family: root.fontFamily
                                             font.pixelSize: Style.font.body
                                             font.bold: true
@@ -673,7 +676,7 @@ Ui.Panel {
                                             height: parent.height
                                             radius: parent.radius
                                             width: parent.width * root.clamp01(providerRow.provider.balance.ratio)
-                                            color: providerRow.provider.balance.alarming ? Color.urgent : root.foreground
+                                            color: providerRow.provider.balance.alarming ? Commons.Color.urgent : root.foreground
                                         }
                                     }
 

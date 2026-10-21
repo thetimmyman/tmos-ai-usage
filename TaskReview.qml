@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 
 // Review is an explicit human action over sanitized backend projections. The component never
 // launches a command and never promotes request success or a passing check into acceptance.
@@ -21,7 +22,7 @@ Column {
     signal decisionRequested(string taskRef, string reviewer, string decision,
                              string expectedRun, string expectedVerification, bool semanticAccepted)
 
-    spacing: Style.space(8)
+    spacing: Style.spacing.rowGap
     onProviderChanged: semanticAcceptedKey = ""
     onStatusTextChanged: semanticAcceptedKey = ""
     onTasksChanged: {
@@ -53,12 +54,12 @@ Column {
 
     Row {
         width: parent.width
-        spacing: Style.space(8)
+        spacing: Style.spacing.rowGap
         Text {
             textFormat: Text.PlainText
             width: parent.width - reloadButton.implicitWidth - Style.space(8)
             text: "TASK EVIDENCE REVIEW"
-            color: Color.accent
+            color: Commons.Color.accent
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
             font.bold: true
@@ -67,10 +68,11 @@ Column {
         Rectangle {
             id: reloadButton
             implicitWidth: reloadText.implicitWidth + Style.space(18)
-            implicitHeight: Style.space(30)
+            implicitHeight: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+            radius: Style.cornerRadius
             color: "transparent"
-            border.color: Color.muted
-            Text { id: reloadText; textFormat: Text.PlainText; anchors.centerIn: parent; text: root.loading ? "Reading…" : "Refresh tasks"; color: Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption }
+            border.color: Commons.Color.muted
+            Text { id: reloadText; textFormat: Text.PlainText; anchors.centerIn: parent; text: root.loading ? "Reading…" : "Refresh tasks"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption }
             MouseArea { anchors.fill: parent; enabled: !root.loading && !root.deciding; onClicked: root.refreshRequested(); cursorShape: Qt.PointingHandCursor }
         }
     }
@@ -79,7 +81,7 @@ Column {
         width: parent.width
         visible: root.errorText !== ""
         text: root.errorText
-        color: Color.urgent
+        color: Commons.Color.urgent
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
@@ -89,7 +91,7 @@ Column {
         width: parent.width
         visible: root.statusText !== ""
         text: root.statusText
-        color: Color.accent
+        color: Commons.Color.accent
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
@@ -112,15 +114,15 @@ Column {
             readonly property var task: modelData
             width: parent.width
             spacing: Style.space(6)
-            Rectangle { width: parent.width; height: 1; color: Qt.alpha(Color.muted, 0.3) }
-            Text { textFormat: Text.PlainText; width: parent.width; text: modelData.label + " · " + modelData.status + " · " + String(modelData.task_ref).slice(0, 10); color: Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; font.bold: true; wrapMode: Text.WordWrap }
+            Rectangle { width: parent.width; height: 1; color: Qt.alpha(Commons.Color.muted, 0.3) }
+            Text { textFormat: Text.PlainText; width: parent.width; text: modelData.label + " · " + modelData.status + " · " + String(modelData.task_ref).slice(0, 10); color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; font.bold: true; wrapMode: Text.WordWrap }
             Text {
                 textFormat: Text.PlainText
                 width: parent.width
                 text: "Run " + root.stamp(modelData.run && modelData.run.started_at)
                     + " · " + (modelData.run && modelData.run.exit_code === 0 ? "process exited 0" : modelData.run && modelData.run.exit_code !== null && modelData.run.exit_code !== undefined ? "process exit " + modelData.run.exit_code : "no completed run")
                     + (modelData.run && modelData.run.artifact_bound ? " · output hash " + String(modelData.run.artifact_sha256 || "unavailable").slice(0, 12) : " · no output artifact bound")
-                color: Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption; wrapMode: Text.WordWrap
+                color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption; wrapMode: Text.WordWrap
             }
             Text {
                 textFormat: Text.PlainText
@@ -155,18 +157,18 @@ Column {
             }
             Row {
                 width: parent.width
-                spacing: Style.space(8)
+                spacing: Style.spacing.rowGap
                 TextField {
                     width: Math.min(parent.width * 0.42, Style.space(190))
                     placeholderText: "Reviewer name"
                     maximumLength: 80
                     text: root.reviewer
                     onTextEdited: root.reviewer = text
-                    color: Color.foreground
+                    color: Commons.Color.foreground
                     placeholderTextColor: root.secondary
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
-                    background: Rectangle { color: Color.background; border.color: Color.muted }
+                    background: Rectangle { color: Commons.Color.background; border.color: Commons.Color.muted }
                 }
                 CheckBox {
                     id: semanticCheck
@@ -181,7 +183,7 @@ Column {
                     contentItem: Text {
                         textFormat: Text.PlainText
                         text: semanticCheck.text
-                        color: Color.foreground
+                        color: Commons.Color.foreground
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption
                         wrapMode: Text.WordWrap
@@ -194,14 +196,14 @@ Column {
                         x: semanticCheck.leftPadding
                         y: semanticCheck.height / 2 - height / 2
                         radius: Style.space(2)
-                        color: semanticCheck.checked ? Color.accent : Color.background
-                        border.color: semanticCheck.checked ? Color.accent : Color.muted
+                        color: semanticCheck.checked ? Commons.Color.accent : Commons.Color.background
+                        border.color: semanticCheck.checked ? Commons.Color.accent : Commons.Color.muted
                         Text {
                             textFormat: Text.PlainText
                             anchors.centerIn: parent
                             visible: semanticCheck.checked
                             text: "✓"
-                            color: Color.background
+                            color: Commons.Color.background
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption
                         }
@@ -224,10 +226,11 @@ Column {
                         enabled: actionable
                         opacity: actionable ? 1 : 0.45
                         implicitWidth: actionText.implicitWidth + Style.space(20)
-                        implicitHeight: Style.space(30)
-                        color: modelData === "accept" && root.semanticAcceptedKey === root.semanticKey(task) ? Qt.alpha(Color.accent, 0.16) : "transparent"
-                        border.color: modelData === "accept" ? Color.accent : Color.muted
-                        Text { id: actionText; textFormat: Text.PlainText; anchors.centerIn: parent; text: parent.caption; color: Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption }
+                        implicitHeight: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+            radius: Style.cornerRadius
+                        color: modelData === "accept" && root.semanticAcceptedKey === root.semanticKey(task) ? Qt.alpha(Commons.Color.accent, 0.16) : "transparent"
+                        border.color: modelData === "accept" ? Commons.Color.accent : Commons.Color.muted
+                        Text { id: actionText; textFormat: Text.PlainText; anchors.centerIn: parent; text: parent.caption; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption }
                         MouseArea {
                             anchors.fill: parent
                             enabled: parent.actionable
@@ -252,5 +255,5 @@ Column {
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
     }
-    readonly property color secondary: Qt.alpha(Color.foreground, 0.68)
+    readonly property color secondary: Qt.alpha(Commons.Color.foreground, 0.68)
 }
