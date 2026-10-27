@@ -1,13 +1,14 @@
 import QtQuick
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 import "Model.js" as Model
 
 // One data source and one ranking, shared with the compact budget popup.
 Rectangle {
     id: root
-    color: Color.background
-    readonly property color secondary: Qt.alpha(Color.foreground, 0.68)
+    color: Commons.Color.background
+    readonly property color secondary: Qt.alpha(Commons.Color.foreground, 0.68)
     property var providers: []
     property string selectedId: ""
     property double nowMs: Date.now()
@@ -123,7 +124,7 @@ Rectangle {
 
     component Label: Text {
         textFormat: Text.PlainText
-        color: Color.foreground
+        color: Commons.Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         wrapMode: Text.WordWrap
@@ -134,8 +135,8 @@ Rectangle {
         signal activated()
         implicitWidth: actionText.implicitWidth + Style.space(22)
         implicitHeight: Style.space(32)
-        color: chosen ? Qt.alpha(Color.accent, 0.16) : "transparent"
-        border.color: chosen ? Color.accent : Color.muted
+        color: chosen ? Qt.alpha(Commons.Color.accent, 0.16) : "transparent"
+        border.color: chosen ? Commons.Color.accent : Commons.Color.muted
         Label { id: actionText; anchors.centerIn: parent; text: parent.title; font.pixelSize: Style.font.caption }
         MouseArea { anchors.fill: parent; onClicked: parent.activated(); cursorShape: Qt.PointingHandCursor }
     }
@@ -151,7 +152,7 @@ Rectangle {
                 spacing: Style.space(16)
                 Action { title: "‹ Budget"; onActivated: root.backRequested() }
                 Action { title: "Setup"; onActivated: root.setupRequested() }
-                Label { text: "INFERENCE X-RAY"; font.pixelSize: Style.font.subtitle; font.bold: true; color: Color.accent }
+                Label { text: "INFERENCE X-RAY"; font.pixelSize: Style.font.subtitle; font.bold: true; color: Commons.Color.accent }
             }
             Flow {
                 width: parent.width
@@ -187,10 +188,10 @@ Rectangle {
             Rectangle { width: parent.width; height: 1; color: root.secondary; opacity: 0.4 }
             Row {
                 width: parent.width
-                Label { width: parent.width * 0.35; text: "SUBSCRIPTION"; color: Color.accent }
-                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.activityMode ? "TURNS / $ *" : "TASKS / $"; color: Color.accent }
-                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.activityMode ? "TURNS · 30D" : "VALIDATED"; color: Color.accent }
-                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.21; text: root.activityMode ? "USD / MONTH" : "SPEND (USD)"; color: Color.accent }
+                Label { width: parent.width * 0.35; text: "SUBSCRIPTION"; color: Commons.Color.accent }
+                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.activityMode ? "TURNS / $ *" : "TASKS / $"; color: Commons.Color.accent }
+                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.22; text: root.activityMode ? "TURNS · 30D" : "VALIDATED"; color: Commons.Color.accent }
+                Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.21; text: root.activityMode ? "USD / MONTH" : "SPEND (USD)"; color: Commons.Color.accent }
             }
             Repeater {
                 model: root.selected ? [root.selected] : root.providers
@@ -206,7 +207,7 @@ Rectangle {
                         Label { horizontalAlignment: Text.AlignRight; width: parent.width * 0.21; text: root.cashText(root.activityMode ? (modelData.activity.price ? modelData.activity.price.monthly_usd : null) : (modelData.economics && modelData.valueStatus !== "unranked" ? modelData.economics.spend_usd : null)) }
                     }
                     Label { visible: root.selected !== null; width: parent.width; color: root.secondary; text: root.activityMode ? (modelData.activity.price ? modelData.activity.price.basis + ' · ' + root.metric(modelData.activity.pi_turns) + ' Pi turns included' : modelData.activity.reason || 'No local activity data') : modelData.economicsReason }
-                    Rectangle { width: parent.width; height: 1; color: Qt.alpha(Color.muted, 0.25) }
+                    Rectangle { width: parent.width; height: 1; color: Qt.alpha(Commons.Color.muted, 0.25) }
                 }
             }
             Label { visible: !root.selected; width: parent.width; color: root.secondary; text: root.activityMode ? "Fees use saved prices or invoice amounts; annual plans are shown per month. Open a subscription for its source." : "Only comparable tasks and spend receive a validated rank." }
@@ -214,7 +215,7 @@ Rectangle {
                 visible: !root.selected
                 width: parent.width
                 spacing: Style.space(8)
-                Label { text: "DATA COVERAGE"; color: Color.accent; font.bold: true }
+                Label { text: "DATA COVERAGE"; color: Commons.Color.accent; font.bold: true }
                 Label { width: parent.width; color: root.secondary; text: "What is available for this comparison. Captured records may cover only part of the period." }
                 Row {
                     width: parent.width
@@ -237,12 +238,12 @@ Rectangle {
                             spacing: Style.space(8)
                             readonly property real cellWidth: (width - 4 * spacing) / 5
                             Label { width: parent.cellWidth; text: modelData.name; font.bold: true }
-                            Label { width: parent.cellWidth; text: root.localCoverageText(modelData); color: modelData.stats.available ? Color.foreground : root.secondary }
-                            Label { width: parent.cellWidth; text: root.reportCoverageText(modelData); color: modelData.report.source ? Color.foreground : root.secondary }
-                            Label { width: parent.cellWidth; text: root.taskCoverageText(modelData); color: modelData.outcomes.available ? Color.foreground : root.secondary }
-                            Label { width: parent.cellWidth; text: root.billingCoverageText(modelData); color: modelData.billing.available ? Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.localCoverageText(modelData); color: modelData.stats.available ? Commons.Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.reportCoverageText(modelData); color: modelData.report.source ? Commons.Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.taskCoverageText(modelData); color: modelData.outcomes.available ? Commons.Color.foreground : root.secondary }
+                            Label { width: parent.cellWidth; text: root.billingCoverageText(modelData); color: modelData.billing.available ? Commons.Color.foreground : root.secondary }
                         }
-                        Rectangle { width: parent.width; height: 1; color: Qt.alpha(Color.muted, 0.25) }
+                        Rectangle { width: parent.width; height: 1; color: Qt.alpha(Commons.Color.muted, 0.25) }
                     }
                 }
                 Row {
@@ -273,14 +274,14 @@ Rectangle {
                 visible: !root.selected
                 width: parent.width
                 spacing: Style.space(8)
-                Label { text: "CAPACITY OVERLAY · % REMAINING"; color: Color.accent; font.bold: true }
+                Label { text: "CAPACITY OVERLAY · % REMAINING"; color: Commons.Color.accent; font.bold: true }
                 Canvas {
                     id: overlay
                     width: parent.width
                     height: Style.space(180)
                     property var rows: root.providers
-                    property color ink: Color.foreground
-                    property color accent: Color.accent
+                    property color ink: Commons.Color.foreground
+                    property color accent: Commons.Color.accent
                     property color muted: root.secondary
                     onRowsChanged: requestPaint()
                     onInkChanged: requestPaint()
@@ -321,7 +322,7 @@ Rectangle {
                         required property int index
                         width: parent.width
                         spacing: Style.space(10)
-                        Rectangle { width: Style.space(22); height: 3; anchors.verticalCenter: parent.verticalCenter; color: index % 2 ? Color.foreground : Color.accent; opacity: 1-(index%4)*0.16 }
+                        Rectangle { width: Style.space(22); height: 3; anchors.verticalCenter: parent.verticalCenter; color: index % 2 ? Commons.Color.foreground : Commons.Color.accent; opacity: 1-(index%4)*0.16 }
                         Label { width: parent.width * 0.4; text: modelData.valueLabel + " · " + modelData.name }
                         Label { text: root.series(modelData).map(n => n < 0 ? '—' : Math.round(n)+'%').join('  /  '); color: root.secondary }
                     }
@@ -332,15 +333,15 @@ Rectangle {
                 visible: !root.selected && root.hasComparableActivityAndCash(root.providers)
                 width: parent.width
                 spacing: Style.space(6)
-                Label { text: "OBSERVED TURNS AND CASH PAID · INDEPENDENT SCALES"; color: Color.accent; font.bold: true }
+                Label { text: "OBSERVED TURNS AND CASH PAID · INDEPENDENT SCALES"; color: Commons.Color.accent; font.bold: true }
                 Label { width: parent.width; color: root.secondary; text: "Bars show captured totals only. Turns use the left scale; cash paid uses the right scale. Each value carries its own observation window; these totals do not establish cost per turn and billing does not affect rankings." }
                 Canvas {
                     id: activityCashChart
                     width: parent.width
                     height: Math.max(Style.space(100), root.providers.length * Style.space(28) + Style.space(24))
                     property var rows: root.providers
-                    property color ink: Color.foreground
-                    property color accent: Color.accent
+                    property color ink: Commons.Color.foreground
+                    property color accent: Commons.Color.accent
                     property color muted: root.secondary
                     onRowsChanged: requestPaint()
                     onWidthChanged: requestPaint()
@@ -378,7 +379,7 @@ Rectangle {
                 spacing: Style.space(12)
                 Label {
                     visible: root.selected !== null && root.selected.quotaGroups.length > 0
-                    text: "MODEL QUOTAS"; color: Color.accent; font.bold: true
+                    text: "MODEL QUOTAS"; color: Commons.Color.accent; font.bold: true
                 }
                 Repeater {
                     model: root.selected ? root.selected.quotaGroups : []
@@ -390,7 +391,7 @@ Rectangle {
                         text: modelData.name + "\n" + Model.quotaGroupDetail(modelData, root.nowMs)
                     }
                 }
-                Label { text: "SUBSCRIPTION PRICE"; color: Color.accent; font.bold: true }
+                Label { text: "SUBSCRIPTION PRICE"; color: Commons.Color.accent; font.bold: true }
                 Label {
                     width: parent.width
                     color: root.secondary
@@ -404,12 +405,12 @@ Rectangle {
                         width: Style.space(140)
                         placeholderText: "USD amount"
                         onTextEdited: root.priceDirty = true
-                        color: Color.foreground
+                        color: Commons.Color.foreground
                         placeholderTextColor: root.secondary
-                        selectionColor: Color.accent
-                        selectedTextColor: Color.background
+                        selectionColor: Commons.Color.accent
+                        selectedTextColor: Commons.Color.background
                         font.family: Style.font.family
-                        background: Rectangle { color: Color.background; border.color: Color.muted }
+                        background: Rectangle { color: Commons.Color.background; border.color: Commons.Color.muted }
                     }
                     Action {
                         id: cycleInput
@@ -423,8 +424,8 @@ Rectangle {
                         onActivated: root.savePriceEditor()
                     }
                 }
-                Label { width: parent.width; visible: root.priceStatus !== "" && root.priceError === ""; text: root.priceStatus; color: Color.accent }
-                Label { width: parent.width; visible: root.priceError !== ''; text: root.priceError; color: Color.urgent }
+                Label { width: parent.width; visible: root.priceStatus !== "" && root.priceError === ""; text: root.priceStatus; color: Commons.Color.accent }
+                Label { width: parent.width; visible: root.priceError !== ''; text: root.priceError; color: Commons.Color.urgent }
                 Label {
                     width: parent.width
                     color: root.secondary
@@ -432,7 +433,7 @@ Rectangle {
                         + ' · observed range ' + (root.selected.activity.first_date || 'unknown') + ' to ' + (root.selected.activity.last_date || 'unknown')
                         + ' · ' + root.metric(root.selected.activity.observed_sessions) + ' local sessions · Pi turns: ' + root.metric(root.selected.activity.pi_turns) + '. Other harnesses may be missing.' : ''
                 }
-                Label { text: "REQUEST HEALTH & COVERAGE"; color: Color.accent; font.bold: true }
+                Label { text: "REQUEST HEALTH & COVERAGE"; color: Commons.Color.accent; font.bold: true }
                 Label { width: parent.width; text: root.selected ? (root.selected.report.source || "No detailed provider report") + (root.selected.report.observed_at ? ' · '+root.selected.report.observed_at : '') : '' }
                 Label { width: parent.width; color: root.secondary; text: root.selected ? (root.selected.report.note || "Detailed request health is unavailable for this source.") : '' }
                 Label {
@@ -446,7 +447,7 @@ Rectangle {
                 Label {
                     width: parent.width
                     visible: root.selected !== null && !!root.selected.report.coverage
-                    color: Color.accent
+                    color: Commons.Color.accent
                     text: {
                         if (!root.selected || !root.selected.report.coverage) return '';
                         var c = root.selected.report.coverage;
@@ -473,7 +474,7 @@ Rectangle {
                             + ' · output ' + root.metric(modelData.output) + ' · cache read ' + root.metric(modelData.cache_read)
                     }
                 }
-                Label { text: "BILLING HISTORY · OBSERVED ONLY"; color: Color.accent; font.bold: true }
+                Label { text: "BILLING HISTORY · OBSERVED ONLY"; color: Commons.Color.accent; font.bold: true }
                 Label {
                     width: parent.width
                     color: root.secondary
@@ -505,7 +506,7 @@ Rectangle {
                     width: parent.width
                     spacing: Style.space(6)
                     visible: root.selected !== null && !!root.selected.consoleReport.note
-                    Label { text: "CONSOLE WORKSPACE REPORT"; color: Color.accent; font.bold: true }
+                    Label { text: "CONSOLE WORKSPACE REPORT"; color: Commons.Color.accent; font.bold: true }
                     Label { width: parent.width; color: root.secondary; text: root.selected ? root.selected.consoleReport.note || '' : '' }
                     Label { width: parent.width; text: root.selected ? 'Observed: ' + (root.selected.consoleReport.observed_at || 'unavailable') : '' }
                     Repeater {
@@ -518,7 +519,7 @@ Rectangle {
                         }
                     }
                 }
-                Label { text: "PUBLISHED DEALS"; color: Color.accent; font.bold: true }
+                Label { text: "PUBLISHED DEALS"; color: Commons.Color.accent; font.bold: true }
                 Label {
                     width: parent.width
                     color: root.secondary
@@ -533,13 +534,13 @@ Rectangle {
                         Label {
                             width: parent.width
                             text: modelData.model + ' · ' + root.offerStatus(modelData)
-                            color: Color.accent
+                            color: Commons.Color.accent
                         }
                         Label { width: parent.width; text: modelData.description + ' ' + modelData.terms }
                         Label { width: parent.width; text: modelData.source; color: root.secondary }
                     }
                 }
-                Label { text: "LOCAL TRANSCRIPT TOKENS BY MODEL"; color: Color.accent; font.bold: true }
+                Label { text: "LOCAL TRANSCRIPT TOKENS BY MODEL"; color: Commons.Color.accent; font.bold: true }
                 Label { width: parent.width; color: root.secondary; text: root.selected ? root.selected.stats.sourceText || root.selected.stats.note : '' }
                 Repeater {
                     model: root.selected ? root.selected.stats.models : []
@@ -548,7 +549,7 @@ Rectangle {
                         width: parent.width
                         spacing: Style.space(4)
                         Label { width: parent.width; text: modelData.id + ' · ' + modelData.tokenText }
-                        Rectangle { width: parent.width; height: Style.space(4); color: Qt.alpha(Color.muted, 0.2); Rectangle { width: parent.width * modelData.share; height: parent.height; color: Color.accent } }
+                        Rectangle { width: parent.width; height: Style.space(4); color: Qt.alpha(Commons.Color.muted, 0.2); Rectangle { width: parent.width * modelData.share; height: parent.height; color: Commons.Color.accent } }
                         Label { width: parent.width; text: modelData.detailText; color: root.secondary; font.pixelSize: Style.font.caption }
                     }
                 }
@@ -559,7 +560,7 @@ Rectangle {
                         + ' · Turns: ' + root.metric(root.selected.economics.turns) + ' · Reworked tasks: ' + root.metric(root.selected.economics.reworked_tasks)
                         + ' · Failed tasks: ' + root.metric(root.selected.economics.failed_tasks) : ''
                 }
-                Label { text: "TASK OUTCOMES · OBSERVED LEDGER COUNTS"; color: Color.accent; font.bold: true }
+                Label { text: "TASK OUTCOMES · OBSERVED LEDGER COUNTS"; color: Commons.Color.accent; font.bold: true }
                 Label {
                     width: parent.width
                     color: root.secondary

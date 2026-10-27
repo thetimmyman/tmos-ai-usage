@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Read theme colours through the `Commons` alias (`Commons.Color.foreground`). Qt exposes its own `Color` value type, which shadows the bare name on current Omarchy, so every themed colour in the bar widget and panels was undefined and the text and borders fell back to Qt's defaults.
 - Read Google AI / Antigravity subscription quota through the official CLI's read-only JSON `/usage` command; keep Gemini and Claude/GPT allowances separate and credentials inside `agy`.
 - Count local Antigravity activity, including runs delegated from Pi, from one canonical transcript per conversation; exclude duplicate exports and avoid inferred model, fee, cache-overlap, or task-validation claims.
 - Add Antigravity to Setup, subscription-price entry, and explicit task capture.
