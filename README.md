@@ -294,7 +294,10 @@ private invoice history and explicit task-outcome capture are documented below.
   the requests to the providers you already pay.
 - Reads are read-only: `~/.claude/.credentials.json`, `~/.codex/auth.json`,
   `~/.cline/data/settings/providers.json`, `~/.commandcode/auth.json`,
-  `~/.local/share/opencode/auth.json`, plus the transcript directories in the table above.
+  `~/.local/share/opencode/auth.json`, `~/.pi/agent/auth.json`, plus the transcript directories in
+  the table above. A credential the provider's endpoint rejects is passed over for the next source
+  rather than reported as an outage, so a retired key in one store cannot hide a fresh sign-in in
+  another.
 
 ## External dependencies
 

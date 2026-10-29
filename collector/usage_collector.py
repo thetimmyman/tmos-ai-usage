@@ -2026,7 +2026,8 @@ BUILTIN_SOURCES = {
         "https://api.cline.bot/api/v1/users/me/plan/usage-limits ($CLINE_API_BASE overrides it)",
     ),
     "command-code": (
-        "$COMMAND_CODE_API_KEY or ~/secrets/command-code.env, else ~/.commandcode/auth.json",
+        "$COMMAND_CODE_API_KEY or ~/secrets/command-code.env, else ~/.commandcode/auth.json or Pi's "
+        "~/.pi/agent/auth.json (an absolute $PI_CODING_AGENT_DIR replaces ~/.pi/agent)",
         "https://api.commandcode.ai/alpha/billing/credits ($COMMAND_CODE_API_BASE overrides it)",
     ),
     "opencode-go": (
@@ -2920,31 +2921,111 @@ def collect_clinepass() -> dict:
     return out
 
 
-def collect_command_code() -> dict:
-    key = env_or_file_key(
-        "COMMAND_CODE_API_KEY", [Path(os.path.expanduser("~/secrets/command-code.env"))]
-    )
-    if not key:
-        auth = read_json(Path(os.path.expanduser("~/.commandcode/auth.json")))
-        key = auth.get("apiKey") if isinstance(auth, dict) else None
-    if not key:
-        return unknown(
-            "command-code",
-            "no COMMAND_CODE_API_KEY and no ~/.commandcode/auth.json; run `cmd login`",
-            status="unauthenticated",
+# Command Code answers an expired or revoked key with 401 ("Your API key has expired. Log in again")
+# and a revoked one can answer 403. Either one is a statement about that credential, not about the
+# service, so the read moves on to the next source instead of reporting an outage.
+COMMAND_CODE_DEAD_CREDENTIAL_STATUSES = (401, 403)
+
+
+def _stored_credential_key(entry: object) -> str | None:
+    """The bearer token inside one stored credential, or None.
+
+    Two writers share these files. Pi's `/login` stores the key as OAuth credentials under
+    `access`; the Command Code CLI's `cmd login` stores `apiKey`. Each file may hold either
+    shape, so both are read rather than assuming the writer.
+    """
+    if not isinstance(entry, dict):
+        return None
+    for field in ("apiKey", "access", "key", "accessToken"):
+        value = entry.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def command_code_credentials() -> list[tuple[str, str]]:
+    """Every Command Code credential on this machine, best-first, as (source, key).
+
+    The order is the one this collector has always used — `$COMMAND_CODE_API_KEY`, then
+    `~/secrets/command-code.env`, then the Command Code CLI's own login — with Pi's `/login`
+    credential last. A source that holds nothing is left out, and the label is what a reason may
+    name: a key is never written to a note, a log, or the cache.
+    """
+    pi_auth_path = pi_activity.agent_dir()[0] / "auth.json"
+    pi_auth = read_json(pi_auth_path)
+    candidates = [
+        (
+            "$COMMAND_CODE_API_KEY or ~/secrets/command-code.env",
+            env_or_file_key(
+                "COMMAND_CODE_API_KEY",
+                [Path(os.path.expanduser("~/secrets/command-code.env"))],
+            ),
+        ),
+        (
+            "~/.commandcode/auth.json",
+            _stored_credential_key(
+                read_json(Path(os.path.expanduser("~/.commandcode/auth.json")))
+            ),
+        ),
+        (
+            pi_activity.display(pi_auth_path),
+            _stored_credential_key(
+                pi_auth.get("commandcode") if isinstance(pi_auth, dict) else None
+            ),
+        ),
+    ]
+    return [(source, key) for source, key in candidates if key]
+
+
+def _command_code_credits(base: str) -> tuple[str | None, object | None, str]:
+    """Read the credits document with the first credential the endpoint accepts.
+
+    A rejected credential is a dead key, and this machine can hold a dead one above a live one: a
+    stale `~/secrets/command-code.env` outranks a Pi `/login` that ran five minutes ago, and the
+    panel would report an outage for a key nobody uses any more. So a 401/403 moves on to the
+    next source. Any other failure — a 5xx, a refused connection — is the endpoint's own bad
+    day and says nothing about a credential, so it propagates as it always has.
+
+    Returns (key, credits, '') on success, and (None, None, reason) when nothing works: a reason
+    that names the sources that were read, and never a key.
+    """
+    rejected: list[str] = []
+    status: int | None = None
+    for source, key in command_code_credentials():
+        try:
+            return key, http_json(f"{base}/alpha/billing/credits", key), ""
+        except urllib.error.HTTPError as exc:
+            if exc.code not in COMMAND_CODE_DEAD_CREDENTIAL_STATUSES:
+                raise
+            rejected.append(source)
+            status = status or exc.code
+    if not rejected:
+        return None, None, (
+            "no Command Code credential in $COMMAND_CODE_API_KEY, "
+            "~/secrets/command-code.env, ~/.commandcode/auth.json or Pi's auth.json; "
+            "run `cmd login`"
         )
+    return None, None, (
+        f"every Command Code credential was rejected (HTTP {status}): "
+        + ", ".join(rejected)
+        + "; run `cmd login`"
+    )
+
+
+def collect_command_code() -> dict:
     base = os.environ.get("COMMAND_CODE_API_BASE", "https://api.commandcode.ai")
-    credits = http_json(f"{base}/alpha/billing/credits", key)
+    key, credits, reason = _command_code_credits(base)
+    if key is None:
+        return unknown("command-code", reason, status="unauthenticated")
     subscription = http_json(f"{base}/alpha/billing/subscriptions", key)
     out = parse_command_code(credits, subscription)
     try:
-        import inference_reports
         import sys
+        import inference_reports
         out['report'] = inference_reports.command_report(sys.modules[__name__], key, base, subscription)
     except Exception:
         out['report'] = {'note': 'Command Code detailed report unavailable; quota reading retained.'}
     return out
-
 
 def _claude_local_entries(now: datetime) -> list:
     """Token counts from ~/.claude/projects/*/*.jsonl for the last 5h. Read-only, bounded."""
