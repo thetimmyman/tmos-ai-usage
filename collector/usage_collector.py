@@ -724,7 +724,9 @@ STATS_CACHE_VERSION = 6
 STATS_MAX_FILES = 600
 
 
-def _recent_files(base: Path, pattern: str, since: float, include=None, limit=None) -> list[Path]:
+def _recent_files(
+    base: Path, pattern: str, since: float, include=None, limit=None
+) -> list[Path]:
     """Files under `base` matching `pattern`, newest first, bounded, never fatal.
 
     `include` filters before the bound applies, so a file it rejects never takes a place. The bound
@@ -858,7 +860,9 @@ def _scan_transcripts(
         if signature is not None:
             fresh["siblings"] = signature
         if raw.get("partial"):
-            fresh["partial"] = True  # the reader counted only part of the file, and says so
+            fresh["partial"] = (
+                True  # the reader counted only part of the file, and says so
+            )
         # A reader may defer a future-dated row until the next refresh. Do not
         # permanently cache a partial contribution even if the file stays unchanged.
         if raw.get("cacheable", True):
@@ -1167,7 +1171,11 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
         raw_last = info.get("last_token_usage")
         last = raw_last if isinstance(raw_last, dict) else {}
         cumulative = info.get("total_token_usage")
-        cumulative_total = _int(cumulative.get("total_tokens")) if isinstance(cumulative, dict) else None
+        cumulative_total = (
+            _int(cumulative.get("total_tokens"))
+            if isinstance(cumulative, dict)
+            else None
+        )
         signature = tuple(sorted((key, value) for key, value in last.items()))
         if cumulative_total is not None:
             if cumulative_total == previous_cumulative:
@@ -1229,7 +1237,9 @@ def _pi_time(raw: object) -> datetime | None:
     return when if when.tzinfo is not None else None
 
 
-def _pi_usage(u: dict, model: object, when: datetime, session_id: str, stats: "_Stats") -> None:
+def _pi_usage(
+    u: dict, model: object, when: datetime, session_id: str, stats: _Stats
+) -> None:
     """Add one Pi usage record (an assistant reply's, or a row-level entry's) to `stats`."""
     inp = _num(u.get("input")) or 0
     out = _num(u.get("output")) or 0
@@ -1249,7 +1259,9 @@ def _pi_usage(u: dict, model: object, when: datetime, session_id: str, stats: "_
 
 
 def _pi_contribution_for(provider: str):
-    def contribution(path: Path, now: datetime, copied: frozenset = frozenset()) -> dict:
+    def contribution(
+        path: Path, now: datetime, copied: frozenset = frozenset()
+    ) -> dict:
         """One Pi session's contribution for `provider`.
 
         `copied` holds the IDs of the entries this session copied from a scanned ancestor when it
@@ -1284,7 +1296,9 @@ def _pi_contribution_for(provider: str):
                         continue
                     inherited = isinstance(row.get("id"), str) and row["id"] in copied
                     m = row.get("message")
-                    if row.get("type") != "message" and isinstance(row.get("usage"), dict):
+                    if row.get("type") != "message" and isinstance(
+                        row.get("usage"), dict
+                    ):
                         # Usage that is not an assistant message (a `usage` entry, a compaction, a
                         # branch summary) still counts toward the session's tokens, per Pi's
                         # session format. It adds no prompt and leaves pending prompts in place.
@@ -1292,7 +1306,10 @@ def _pi_contribution_for(provider: str):
                             continue
                         prov, model = active
                         if isinstance(row.get("provider"), str):
-                            prov, model = _pi_provider(row.get("provider")), row.get("model")
+                            prov, model = (
+                                _pi_provider(row.get("provider")),
+                                row.get("model"),
+                            )
                         when = _pi_time(row.get("timestamp"))
                         if when is not None and when > now:
                             deferred = True
@@ -1322,7 +1339,13 @@ def _pi_contribution_for(provider: str):
                             for pw in pending_prompts:
                                 stats.add_prompt(pw, session_id)
                             u = m.get("usage")
-                            _pi_usage(u if isinstance(u, dict) else {}, m.get("model"), when, session_id, stats)
+                            _pi_usage(
+                                u if isinstance(u, dict) else {},
+                                m.get("model"),
+                                when,
+                                session_id,
+                                stats,
+                            )
                         pending_prompts = []
         except OSError:
             pass
@@ -1349,7 +1372,10 @@ def _pi_followed(result: dict) -> dict:
     note = pi_activity.unfollowed_note(setting)
     result["note"] = _scrub(f"{note} {result['note']}" if result.get("note") else note)
     scan = result.get("scan")
-    result["scan"] = {**(scan if isinstance(scan, dict) else {}), "pi_unfollowed": setting}
+    result["scan"] = {
+        **(scan if isinstance(scan, dict) else {}),
+        "pi_unfollowed": setting,
+    }
     return result
 
 
@@ -1412,7 +1438,9 @@ def _scan_pi_transcripts(
         except OSError:
             continue
         ancestors = lineage.ancestors(path)
-        signature = "|".join(f"{_resolved_path(a)}:{_stat_signature([a])}" for a in ancestors)
+        signature = "|".join(
+            f"{_resolved_path(a)}:{_stat_signature([a])}" for a in ancestors
+        )
         hit = entries.get(key)
         if (
             isinstance(hit, dict)
@@ -1530,7 +1558,9 @@ def scan_command_code_stats(
             }
             pi_included = True
     stats = _absorb(parts, now)
-    stats.source = "~/.commandcode/projects" + (" + " + _pi_source() if pi_included else "")
+    stats.source = "~/.commandcode/projects" + (
+        " + " + _pi_source() if pi_included else ""
+    )
     stats.scan = scan
     result = stats.finish(now)
     return _pi_followed(result) if root is None else result
@@ -1576,7 +1606,8 @@ def _opencode_bucket(tokens: dict) -> tuple[dict, int]:
     cache = raw_cache if isinstance(raw_cache, dict) else {}
     bucket = {
         "input_tokens": _num(tokens.get("input")) or 0,
-        "output_tokens": (_num(tokens.get("output")) or 0) + (_num(tokens.get("reasoning")) or 0),
+        "output_tokens": (_num(tokens.get("output")) or 0)
+        + (_num(tokens.get("reasoning")) or 0),
         "cache_read_tokens": _num(cache.get("read")) or 0,
         "cache_write_tokens": _num(cache.get("write")) or 0,
     }
@@ -1617,7 +1648,7 @@ def _opencode_model(payload: dict) -> str | None:
     return raw if isinstance(raw, str) and raw else None
 
 
-def _opencode_count(stats: "_Stats", rows) -> None:
+def _opencode_count(stats: _Stats, rows) -> None:
     """Count the prompts and replies OpenCode Go answered, from one table's rows in session order.
 
     `rows` are `(session, when, kind, payload)`, each session's in the order it was written. A
@@ -1654,7 +1685,12 @@ def _opencode_rows(rows, kind_of):
     for session_id, created, msg_type, data in rows:
         when, payload = _opencode_payload(created, data)
         if payload is not None:
-            yield str(session_id or ""), when, kind_of(msg_type, payload.get("role")), payload
+            yield (
+                str(session_id or ""),
+                when,
+                kind_of(msg_type, payload.get("role")),
+                payload,
+            )
 
 
 def _opencode_kind(msg_type, role) -> str | None:
@@ -1695,9 +1731,13 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
                 "SELECT session_id, time_created, type, data FROM session_message "
                 "WHERE time_created >= ? AND time_created <= ? ORDER BY session_id, seq"
             )
-            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind))
+            _opencode_count(
+                stats,
+                _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind),
+            )
             deferred = con.execute(
-                "SELECT EXISTS (SELECT 1 FROM session_message WHERE time_created > ?)", (now_ms,)
+                "SELECT EXISTS (SELECT 1 FROM session_message WHERE time_created > ?)",
+                (now_ms,),
             ).fetchone()[0]
         # OpenCode keeps the v1 `message` rows through the v2 cutover, and its migration copies each
         # one into `session_message` under the same id. So both are read: a v1 row counts only when
@@ -1708,10 +1748,17 @@ def _opencode_contribution(path: Path, now: datetime) -> dict:
             if "session_message" in tables:
                 query += " AND id NOT IN (SELECT id FROM session_message)"
             query += " ORDER BY session_id, time_created, id"
-            _opencode_count(stats, _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind))
-            deferred = deferred or con.execute(
-                "SELECT EXISTS (SELECT 1 FROM message WHERE time_created > ?)", (now_ms,)
-            ).fetchone()[0]
+            _opencode_count(
+                stats,
+                _opencode_rows(con.execute(query, (cutoff_ms, now_ms)), _opencode_kind),
+            )
+            deferred = (
+                deferred
+                or con.execute(
+                    "SELECT EXISTS (SELECT 1 FROM message WHERE time_created > ?)",
+                    (now_ms,),
+                ).fetchone()[0]
+            )
     finally:
         con.close()
     result = {"days": stats.days, "models": stats.models}
@@ -1912,6 +1959,7 @@ STATS_SCANNERS = {
 
 def scan_antigravity_stats(now=None, root=None, state_dir=None):
     import agy_usage
+
     return agy_usage.scan_stats(sys.modules[__name__], now, root, state_dir)
 
 
@@ -2860,15 +2908,27 @@ def collect_clinepass() -> dict:
             )
             if name:
                 out["plan"] = _scrub(name)
-            if isinstance(p, dict) and type(p.get('pricePerSeatCents')) in (int, float) and p.get('interval') in ('Annual', 'Monthly'):
-                out['subscription_quote'] = {'amount_usd': p['pricePerSeatCents'] / 100,
-                    'cycle': 'year' if p['interval'] == 'Annual' else 'month'}
+            if (
+                isinstance(p, dict)
+                and type(p.get("pricePerSeatCents")) in (int, float)
+                and p.get("interval") in ("Annual", "Monthly")
+            ):
+                out["subscription_quote"] = {
+                    "amount_usd": p["pricePerSeatCents"] / 100,
+                    "cycle": "year" if p["interval"] == "Annual" else "month",
+                }
             try:
-                import inference_reports
                 import sys
-                out['report'] = inference_reports.cline_report(sys.modules[__name__], key, base, directory=STATE_DIR)
+
+                import inference_reports
+
+                out["report"] = inference_reports.cline_report(
+                    sys.modules[__name__], key, base, directory=STATE_DIR
+                )
             except Exception:
-                out['report'] = {'note': 'Cline detailed report unavailable; quota reading retained.'}
+                out["report"] = {
+                    "note": "Cline detailed report unavailable; quota reading retained."
+                }
             return out
     # Meter unreachable or an odd shape -> fall through to the ledger-derived estimate.
 
@@ -2909,7 +2969,9 @@ def collect_clinepass() -> dict:
             token = data.get("nextToken")
             if not batch or not token or (oldest and oldest < cutoff):
                 break
-            url = f"{base}/api/v1/users/{user_id}/usages?" + urllib.parse.urlencode({"limit": 100, "cursor": token})
+            url = f"{base}/api/v1/users/{user_id}/usages?" + urllib.parse.urlencode(
+                {"limit": 100, "cursor": token}
+            )
             if page == 24:
                 truncated = True
     out = parse_clinepass(plan, items)
@@ -3000,15 +3062,23 @@ def _command_code_credits(base: str) -> tuple[str | None, object | None, str]:
             rejected.append(source)
             status = status or exc.code
     if not rejected:
-        return None, None, (
-            "no Command Code credential in $COMMAND_CODE_API_KEY, "
-            "~/secrets/command-code.env, ~/.commandcode/auth.json or Pi's auth.json; "
-            "run `cmd login`"
+        return (
+            None,
+            None,
+            (
+                "no Command Code credential in $COMMAND_CODE_API_KEY, "
+                "~/secrets/command-code.env, ~/.commandcode/auth.json or Pi's auth.json; "
+                "run `cmd login`"
+            ),
         )
-    return None, None, (
-        f"every Command Code credential was rejected (HTTP {status}): "
-        + ", ".join(rejected)
-        + "; run `cmd login`"
+    return (
+        None,
+        None,
+        (
+            f"every Command Code credential was rejected (HTTP {status}): "
+            + ", ".join(rejected)
+            + "; run `cmd login`"
+        ),
     )
 
 
@@ -3021,11 +3091,18 @@ def collect_command_code() -> dict:
     out = parse_command_code(credits, subscription)
     try:
         import sys
+
         import inference_reports
-        out['report'] = inference_reports.command_report(sys.modules[__name__], key, base, subscription)
+
+        out["report"] = inference_reports.command_report(
+            sys.modules[__name__], key, base, subscription
+        )
     except Exception:
-        out['report'] = {'note': 'Command Code detailed report unavailable; quota reading retained.'}
+        out["report"] = {
+            "note": "Command Code detailed report unavailable; quota reading retained."
+        }
     return out
+
 
 def _claude_local_entries(now: datetime) -> list:
     """Token counts from ~/.claude/projects/*/*.jsonl for the last 5h. Read-only, bounded."""
@@ -3161,9 +3238,7 @@ def _claude_stale_reading(gate: dict, reason: str, now: datetime) -> dict | None
     return out
 
 
-def _claude_fallback(
-    gate: dict, reason: str, plan: str | None, now: datetime
-) -> dict:
+def _claude_fallback(gate: dict, reason: str, plan: str | None, now: datetime) -> dict:
     out = _claude_stale_reading(gate, reason, now)
     if out is None:
         out = parse_claude_local(_claude_local_entries(now), now)
@@ -3209,7 +3284,9 @@ def collect_claude_code(
     # must not be served for this one, so a changed identity starts the gate over.
     if claude_config_path is None and creds_path is None:
         claude_config_path = Path(os.path.expanduser("~/.claude.json"))
-    account = (claude_config_path and _claude_account_id(claude_config_path)) or fingerprint
+    account = (
+        claude_config_path and _claude_account_id(claude_config_path)
+    ) or fingerprint
     if gate.get("account") != account:
         gate = {"account": account}
     # The config and the credentials file are written separately, so for a moment the account id
@@ -3286,7 +3363,9 @@ def collect_claude_code(
         gate["last_failed"] = reason
         _save_claude_gate(gate, state_dir)
         return finish(_claude_fallback(gate, reason, plan, now))
-    except Exception as exc:  # unreachable/garbled -> last reading or local estimate, never a crash
+    except (
+        Exception
+    ) as exc:  # unreachable/garbled -> last reading or local estimate, never a crash
         reason = f"usage endpoint unreachable ({type(exc).__name__})"
         gate["last_failed"] = reason
         _save_claude_gate(gate, state_dir)
@@ -3301,7 +3380,11 @@ def collect_claude_code(
             "observed_at": out["observed_at"],
             "plan": plan,
             "windows": [
-                {"name": w["name"], "used_pct": w["used_pct"], "resets_at": w["resets_at"]}
+                {
+                    "name": w["name"],
+                    "used_pct": w["used_pct"],
+                    "resets_at": w["resets_at"],
+                }
                 for w in out["windows"]
             ],
         }
@@ -3351,11 +3434,13 @@ def collect_codex() -> dict:
 
 def parse_antigravity(payload, now=None):
     import agy_usage
+
     return agy_usage.parse_usage(sys.modules[__name__], payload, now)
 
 
 def collect_antigravity():
     import agy_usage
+
     return agy_usage.collect(sys.modules[__name__])
 
 
@@ -3479,11 +3564,14 @@ def write_cache(document: dict, path: Path = CACHE_PATH) -> Path:
     """Atomic: a reader with a FileView never sees half a document."""
     path.parent.mkdir(parents=True, exist_ok=True)
     import tempfile
-    descriptor, temporary = tempfile.mkstemp(prefix='.usage-', suffix='.json', dir=path.parent)
+
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".usage-", suffix=".json", dir=path.parent
+    )
     try:
-        with os.fdopen(descriptor, 'w') as stream:
+        with os.fdopen(descriptor, "w") as stream:
             json.dump(document, stream, indent=2)
-            stream.write('\n')
+            stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -3697,7 +3785,9 @@ def _selftest() -> int:
         held = run(limited_at + timedelta(minutes=30), fetch_ok)
         check(
             "claude gate: no call while the rate-limit gate is closed",
-            calls == [] and held["status"] == "stale" and "rate-limited" in held["note"],
+            calls == []
+            and held["status"] == "stale"
+            and "rate-limited" in held["note"],
             f"{calls} {held}",
         )
         past_reset = _claude_stale_reading(gate, "held", now + timedelta(hours=3))
@@ -3712,7 +3802,9 @@ def _selftest() -> int:
         expired = run(now + timedelta(hours=2), fetch_ok)
         check(
             "claude gate: an expired token is never sent and says to run `claude`",
-            calls == [] and "expired" in expired["note"] and "`claude`" in expired["note"],
+            calls == []
+            and "expired" in expired["note"]
+            and "`claude`" in expired["note"],
             f"{calls} {expired}",
         )
         write_creds("token-one", now + timedelta(days=1))
@@ -3737,6 +3829,7 @@ def _selftest() -> int:
             "token-one" not in _claude_gate_path(gate_dir).read_text()
             and "token-two" not in _claude_gate_path(gate_dir).read_text(),
         )
+
         def unreachable(url, token, headers=None):
             calls.append("down")
             raise OSError("synthetic outage")
@@ -3756,7 +3849,8 @@ def _selftest() -> int:
         healed = run(failed_at + timedelta(minutes=11), fetch_ok)
         check(
             "claude gate: the next good read clears the failure",
-            healed["status"] == "ok" and "last_failed" not in _load_claude_gate(gate_dir),
+            healed["status"] == "ok"
+            and "last_failed" not in _load_claude_gate(gate_dir),
             f"{healed}",
         )
 
@@ -3765,7 +3859,9 @@ def _selftest() -> int:
         config_file = gate_dir / "claude.json"
 
         def sign_in(account: str) -> None:
-            config_file.write_text(json.dumps({"oauthAccount": {"accountUuid": account}}))
+            config_file.write_text(
+                json.dumps({"oauthAccount": {"accountUuid": account}})
+            )
 
         def run_as(at: datetime, fetch) -> dict:
             return collect_claude_code(
@@ -4527,7 +4623,11 @@ def _probe(
         print(f"provider:   {provider_id}")
         print("origin:     built-in adapter in collector/usage_collector.py")
         print(f"credential: {credential}")
-        print(f"command:    {endpoint}" if provider_id == "antigravity" else f"endpoint:   GET {endpoint}")
+        print(
+            f"command:    {endpoint}"
+            if provider_id == "antigravity"
+            else f"endpoint:   GET {endpoint}"
+        )
         try:
             row = COLLECTORS[provider_id]()
         except Exception as exc:
@@ -4582,15 +4682,25 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="write the cache here instead of the plugin's own state directory",
     )
-    ap.add_argument("--no-offer-refresh", action="store_true", help="use bundled deal observations without a public documentation fetch")
-    ap.add_argument("--no-console-report", action="store_true", help="skip optional Console service-account export")
+    ap.add_argument(
+        "--no-offer-refresh",
+        action="store_true",
+        help="use bundled deal observations without a public documentation fetch",
+    )
+    ap.add_argument(
+        "--no-console-report",
+        action="store_true",
+        help="skip optional Console service-account export",
+    )
     args = ap.parse_args(argv)
 
     if args.selftest:
         return _selftest()
     if args.list_providers:
         return _list_providers(specs, definition_rows, args.json)
-    configure_paths(args.state_dir)  # before probes too: a probe's gate state follows --state-dir
+    configure_paths(
+        args.state_dir
+    )  # before probes too: a probe's gate state follows --state-dir
     if args.probe:
         return _probe(args.probe, specs, definition_rows, args.json)
     if not args.once:
@@ -4600,7 +4710,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with os.fdopen(os.open(STATE_DIR / 'collector.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'w') as collector_lock:
+    with os.fdopen(
+        os.open(
+            STATE_DIR / "collector.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+        ),
+        "w",
+    ) as collector_lock:
         try:
             fcntl.flock(collector_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -4608,11 +4723,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         document = collect_all(args.only, local_stats=not args.no_stats)
         import inference_reports
-        inference_reports.attach_local(document, STATE_DIR, refresh_offers=not args.no_offer_refresh, refresh_console=not args.no_console_report)
+
+        inference_reports.attach_local(
+            document,
+            STATE_DIR,
+            refresh_offers=not args.no_offer_refresh,
+            refresh_console=not args.no_console_report,
+        )
         try:
             write_cache(document, configure_paths(args.state_dir))
         except OSError as exc:
-            print(f"warning: could not write {CACHE_PATH}: {_scrub(exc)}", file=sys.stderr)
+            print(
+                f"warning: could not write {CACHE_PATH}: {_scrub(exc)}", file=sys.stderr
+            )
         if args.json:
             print(json.dumps(document, indent=2))
     return 0
