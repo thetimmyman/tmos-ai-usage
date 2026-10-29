@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Read theme colours through the `Commons` alias (`Commons.Color.foreground`). Qt exposes its own `Color` value type, which shadows the bare name on current Omarchy, so every themed colour in the bar widget and panels was undefined and the text and borders fell back to Qt's defaults.
 - Read Google AI / Antigravity subscription quota through the official CLI's read-only JSON `/usage` command; keep Gemini and Claude/GPT allowances separate and credentials inside `agy`.
 - Count local Antigravity activity, including runs delegated from Pi, from one canonical transcript per conversation; exclude duplicate exports and avoid inferred model, fee, cache-overlap, or task-validation claims.
 - Add Antigravity to Setup, subscription-price entry, and explicit task capture.
@@ -20,7 +21,7 @@
 - Hold the whole-body read deadline during a blocking receive: each read gets only what is left of it, so a server that sends a byte and stalls can no longer stretch an 8 s read toward 16 s.
 - Keep a Claude quota reading **stale** after a failed refresh, including while the call interval throttles the next attempt; only a successful read marks it current again.
 - Bind the Claude quota gate (cached reading, backoff, rejected token) to the signed-in account, so switching accounts fetches the new account instead of showing the old one's meter; a cached meter is only reused for the token that read it.
-- Mark a stale Claude meter in the collapsed bar and tooltip (` · stale`, warning tone), and in setup as detected rather than "sign in first".
+- Mark a stale Claude meter in the collapsed bar and tooltip (`· stale`, warning tone), and in setup as detected rather than "sign in first".
 - `--probe` honours `--state-dir`, so a diagnostic probe no longer reads or writes the live gate state.
 
 ## 0.3.2 · 2026-10-03
