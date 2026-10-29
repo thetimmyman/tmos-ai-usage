@@ -22,7 +22,7 @@ Column {
     signal decisionRequested(string taskRef, string reviewer, string decision,
                              string expectedRun, string expectedVerification, bool semanticAccepted)
 
-    spacing: Style.space(8)
+    spacing: Style.spacing.rowGap
     onProviderChanged: semanticAcceptedKey = ""
     onStatusTextChanged: semanticAcceptedKey = ""
     onTasksChanged: {
@@ -54,7 +54,7 @@ Column {
 
     Row {
         width: parent.width
-        spacing: Style.space(8)
+        spacing: Style.spacing.rowGap
         Text {
             textFormat: Text.PlainText
             width: parent.width - reloadButton.implicitWidth - Style.space(8)
@@ -68,7 +68,8 @@ Column {
         Rectangle {
             id: reloadButton
             implicitWidth: reloadText.implicitWidth + Style.space(18)
-            implicitHeight: Style.space(30)
+            implicitHeight: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+            radius: Style.cornerRadius
             color: "transparent"
             border.color: Commons.Color.muted
             Text { id: reloadText; textFormat: Text.PlainText; anchors.centerIn: parent; text: root.loading ? "Reading…" : "Refresh tasks"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption }
@@ -156,7 +157,7 @@ Column {
             }
             Row {
                 width: parent.width
-                spacing: Style.space(8)
+                spacing: Style.spacing.rowGap
                 TextField {
                     width: Math.min(parent.width * 0.42, Style.space(190))
                     placeholderText: "Reviewer name"
@@ -225,7 +226,8 @@ Column {
                         enabled: actionable
                         opacity: actionable ? 1 : 0.45
                         implicitWidth: actionText.implicitWidth + Style.space(20)
-                        implicitHeight: Style.space(30)
+                        implicitHeight: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+            radius: Style.cornerRadius
                         color: modelData === "accept" && root.semanticAcceptedKey === root.semanticKey(task) ? Qt.alpha(Commons.Color.accent, 0.16) : "transparent"
                         border.color: modelData === "accept" ? Commons.Color.accent : Commons.Color.muted
                         Text { id: actionText; textFormat: Text.PlainText; anchors.centerIn: parent; text: parent.caption; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.caption }

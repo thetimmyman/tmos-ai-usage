@@ -229,7 +229,7 @@ Ui.Panel {
                 Column {
                     id: body
                     width: scroll.availableWidth
-                    spacing: Style.space(8)
+                    spacing: Style.spacing.panelGap
 
                     // ---- header: what this is, and how fresh it is -------------------------
                     Item {
@@ -244,7 +244,7 @@ Ui.Panel {
                             text: root.providers.length && root.providers[0].rankingMetric === "activity" ? "AI budget · turns/$*" : "AI budget"
                             color: root.foreground
                             font.family: root.fontFamily
-                            font.pixelSize: Style.font.subtitle
+                            font.pixelSize: Style.font.title
                             font.bold: true
                         }
 
@@ -263,7 +263,8 @@ Ui.Panel {
 
                     Rectangle {
                         width: parent.width
-                        height: Style.space(32)
+                        height: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+                        radius: Style.cornerRadius
                         color: Qt.alpha(Commons.Color.accent, 0.12)
                         border.color: Commons.Color.accent
                         Text {
@@ -277,7 +278,8 @@ Ui.Panel {
                     }
                     Rectangle {
                         width: parent.width
-                        height: Style.space(34)
+                        height: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+                        radius: Style.cornerRadius
                         color: "transparent"
                         border.color: Commons.Color.muted
                         Text {
@@ -346,7 +348,7 @@ Ui.Panel {
                             Rectangle {
                                 id: rowSurface
                                 width: parent.width
-                                height: rowContent.implicitHeight + Style.spacing.sm * 2
+                                height: rowContent.implicitHeight + Style.spacing.lg * 2
                                 radius: Style.cornerRadius
                                 color: providerRow.expanded
                                     ? Style.selectedFill
@@ -362,7 +364,7 @@ Ui.Panel {
                                 Column {
                                     id: rowContent
                                     anchors.fill: parent
-                                    anchors.margins: Style.spacing.sm
+                                    anchors.margins: Style.spacing.lg
                                     spacing: Style.spacing.xs
 
                                     // name · plan ........................................ today · status · chevron

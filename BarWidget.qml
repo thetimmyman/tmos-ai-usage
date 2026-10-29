@@ -129,6 +129,7 @@ BarWidget {
         id: button
         anchors.fill: parent
         bar: root.bar
+        horizontalMargin: Style.spacing.xxl
         text: Model.barTextFor(root.focusedProvider)
         tooltipText: Model.tooltip(root.providers, source.observedAt, root.nowMs)
         active: root.opened

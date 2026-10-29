@@ -133,8 +133,9 @@ Rectangle {
         property string title: ""
         property bool chosen: false
         signal activated()
-        implicitWidth: actionText.implicitWidth + Style.space(22)
-        implicitHeight: Style.space(32)
+        implicitWidth: actionText.implicitWidth + Style.spacing.controlPaddingX * 2
+        implicitHeight: Style.spacing.controlHeight + Style.spacing.controlPaddingY
+        radius: Style.cornerRadius
         color: chosen ? Qt.alpha(Commons.Color.accent, 0.16) : "transparent"
         border.color: chosen ? Commons.Color.accent : Commons.Color.muted
         Label { id: actionText; anchors.centerIn: parent; text: parent.title; font.pixelSize: Style.font.caption }
@@ -143,6 +144,7 @@ Rectangle {
     ScrollView {
         id: scroll
         anchors.fill: parent
+        anchors.margins: Style.spacing.panelPadding
         clip: true
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
         Column {
@@ -152,7 +154,7 @@ Rectangle {
                 spacing: Style.space(16)
                 Action { title: "‹ Budget"; onActivated: root.backRequested() }
                 Action { title: "Setup"; onActivated: root.setupRequested() }
-                Label { text: "INFERENCE X-RAY"; font.pixelSize: Style.font.subtitle; font.bold: true; color: Commons.Color.accent }
+                Label { text: "INFERENCE X-RAY"; font.pixelSize: Style.font.title; font.bold: true; color: Commons.Color.accent }
             }
             Flow {
                 width: parent.width

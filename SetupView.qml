@@ -70,7 +70,7 @@ Rectangle {
         id: scroll
         objectName: "setupScroll"
         anchors.fill: parent
-        anchors.margins: Style.space(12)
+        anchors.margins: Style.spacing.panelPadding
         clip: true
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
         ScrollBar.vertical.policy: content.implicitHeight > availableHeight ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
@@ -78,7 +78,7 @@ Rectangle {
         Column {
             id: content
             width: scroll.availableWidth
-            spacing: Style.space(10)
+            spacing: Style.spacing.panelGap
 
             Row {
                 width: parent.width
@@ -91,7 +91,7 @@ Rectangle {
                         text: "TMOS AI USAGE · SETUP"
                         color: Commons.Color.accent
                         font.family: Style.font.family
-                        font.pixelSize: Style.font.bodySmall
+                        font.pixelSize: Style.font.title
                         font.bold: true
                     }
                     Text {
@@ -139,14 +139,14 @@ Rectangle {
 
             Rectangle {
                 width: parent.width
-                implicitHeight: collectionColumn.implicitHeight + Style.space(16)
+                implicitHeight: collectionColumn.implicitHeight + Style.spacing.xxl * 2
                 color: Qt.alpha(Commons.Color.foreground, 0.035)
                 border.color: Qt.alpha(Commons.Color.muted, 0.35)
                 radius: Style.cornerRadius
                 Column {
                     id: collectionColumn
                     anchors.left: parent.left; anchors.right: parent.right
-                    anchors.top: parent.top; anchors.margins: Style.space(8)
+                    anchors.top: parent.top; anchors.margins: Style.spacing.xxl
                     spacing: Style.space(5)
                     Text { textFormat: Text.PlainText; text: "1 · COLLECTION STATUS"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; font.bold: true }
                     Text {
@@ -197,11 +197,11 @@ Rectangle {
 
             Rectangle {
                 width: parent.width
-                implicitHeight: billingColumn.implicitHeight + Style.space(16)
+                implicitHeight: billingColumn.implicitHeight + Style.spacing.xxl * 2
                 color: Qt.alpha(Commons.Color.foreground, 0.035); border.color: Qt.alpha(Commons.Color.muted, 0.35); radius: Style.cornerRadius
                 Column {
                     id: billingColumn
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Style.space(8)
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Style.spacing.xxl
                     spacing: Style.space(5)
                     Text { textFormat: Text.PlainText; text: "2 · SUBSCRIPTION PRICES"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; font.bold: true }
                     Text { textFormat: Text.PlainText; width: parent.width; text: "Confirm each displayed subscription amount against your own billing page. Provider plan quotes are estimates; saved prices remain your input and should be checked if they change. No billing page is opened here."; color: root.secondary; font.family: Style.font.family; font.pixelSize: Style.font.caption; wrapMode: Text.WordWrap }
@@ -240,11 +240,11 @@ Rectangle {
 
             Rectangle {
                 width: parent.width
-                implicitHeight: captureColumn.implicitHeight + Style.space(16)
+                implicitHeight: captureColumn.implicitHeight + Style.spacing.xxl * 2
                 color: Qt.alpha(Commons.Color.foreground, 0.035); border.color: Qt.alpha(Commons.Color.muted, 0.35); radius: Style.cornerRadius
                 Column {
                     id: captureColumn
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Style.space(8)
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Style.spacing.xxl
                     spacing: Style.space(6)
                     Text { textFormat: Text.PlainText; text: "3 · OPTIONAL TASK CAPTURE"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; font.bold: true }
                     Text { textFormat: Text.PlainText; width: parent.width; text: "These opt-in integrations record task activity for review. A successful command or passing checks alone never marks work as validated. Disable removes only this plugin's matching link; copied files are left unchanged."; color: root.secondary; font.family: Style.font.family; font.pixelSize: Style.font.caption; wrapMode: Text.WordWrap }
@@ -285,11 +285,11 @@ Rectangle {
 
             Rectangle {
                 width: parent.width
-                implicitHeight: importColumn.implicitHeight + Style.space(16)
+                implicitHeight: importColumn.implicitHeight + Style.spacing.xxl * 2
                 color: Qt.alpha(Commons.Color.foreground, 0.035); border.color: Qt.alpha(Commons.Color.muted, 0.35); radius: Style.cornerRadius
                 Column {
                     id: importColumn
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Style.space(8)
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Style.spacing.xxl
                     spacing: Style.space(5)
                     Text { textFormat: Text.PlainText; text: "4 · REPORT IMPORTS & HUMAN REVIEW"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; font.bold: true }
                     Text { textFormat: Text.PlainText; width: parent.width; text: "Provider reports can be imported automatically from supported export files. Place exports in this incoming folder, then refresh. Billing documents and task outcomes require your manual import and review; they are never inferred from usage."; color: root.secondary; font.family: Style.font.family; font.pixelSize: Style.font.caption; wrapMode: Text.WordWrap }
