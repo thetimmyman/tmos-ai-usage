@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Read Command Code's quota with every credential the machine may hold — `$COMMAND_CODE_API_KEY`, `~/secrets/command-code.env`, the Command Code CLI's own login and Pi's `/login` — and pass over a credential the endpoint rejects (HTTP 401/403) for the next source, so a key Command Code retired in one store no longer hides a fresh sign-in in another. When every credential is rejected the row asks for `cmd login` and names the sources it read, never a key.
 - Read theme colours through the `Commons` alias (`Commons.Color.foreground`). Qt exposes its own `Color` value type, which shadows the bare name on current Omarchy, so every themed colour in the bar widget and panels was undefined and the text and borders fell back to Qt's defaults.
 - Read Google AI / Antigravity subscription quota through the official CLI's read-only JSON `/usage` command; keep Gemini and Claude/GPT allowances separate and credentials inside `agy`.
 - Count local Antigravity activity, including runs delegated from Pi, from one canonical transcript per conversation; exclude duplicate exports and avoid inferred model, fee, cache-overlap, or task-validation claims.
