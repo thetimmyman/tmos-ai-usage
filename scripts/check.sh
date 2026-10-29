@@ -93,6 +93,18 @@ if command -v "$QMLFORMAT" >/dev/null 2>&1; then
 else
     echo "SKIP qmlformat not installed"
 fi
+
+# Qt ships its own `Color` value type, and it wins the bare name over the qs.Commons singleton on
+# the current shell: `Color.foreground` is then undefined and the widget paints Qt's defaults.
+# The native tests catch that at runtime, but only on an Omarchy host; this catches it on any
+# runner, before the display can lie about it.
+echo "== qml: theme colours read through the Commons alias (no bare Color.*)"
+if command -v grep >/dev/null 2>&1 && grep -Pn '(?<![\w.])Color\.' -- *.qml; then
+    echo "FAIL a bare Color.* read resolves to Qt's value type, not the theme singleton: use Commons.Color.*"
+    rc=1
+else
+    echo "no bare Color.* reads"
+fi
 if command -v quickshell >/dev/null 2>&1 && [ -d /usr/share/omarchy/shell/Commons ]; then
     bash scripts/test-xray.sh || rc=1
     bash scripts/test-price-save.sh || rc=1
