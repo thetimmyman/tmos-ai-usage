@@ -42,7 +42,7 @@ def by_type(rows, call_type):
 
 def turn(
     run="run-1",
-    session="session-x",
+    session: str | None = "session-x",
     at="2026-01-15T10:00:00.000Z",
     input=100,
     output=10,
@@ -793,6 +793,90 @@ class HiddenCallAccountingTests(unittest.TestCase):
         )
         self.assertEqual([], parser.finish())
         self.assertEqual(1, len(parser.unattributed))
+
+    def test_a_labelled_request_keeps_its_purpose_and_its_model(self):
+        """The forwarder names memory and title calls from their own body markers."""
+        memory = egress("2026-01-15T10:00:00.300Z", label="memory_fetch")
+        memory.update(
+            {
+                "label_source": "response_format",
+                "model": "synthetic-memory-model",
+                "stream": False,
+                "messages": 2,
+                "roles": "system,user",
+                "tools": None,
+                "response_format": "json_object",
+                "purpose": None,
+            }
+        )
+        title = egress("2026-01-15T10:00:25.000Z", label="title_generation")
+        title.update(
+            {
+                "label_source": "metadata.purpose",
+                "model": "synthetic-model",
+                "max_tokens": 4096,
+                "purpose": "session_title_generation",
+            }
+        )
+        log = lines(
+            {
+                "at": "2026-01-15T10:00:00.000Z",
+                "kind": "event",
+                "sessionKey": "session-x",
+                "seq": 0,
+                "final": False,
+                "event": {"type": "turn_started", "runId": "run-1"},
+            },
+            memory,
+            turn(at="2026-01-15T10:00:20.000Z"),
+            title,
+        )
+        _, rows = parse(log)
+        found = {
+            row["call_type"]: row
+            for row in rows
+            if row["call_type"] != pilotdeck.USER_DIRECT
+        }
+        self.assertEqual(
+            {pilotdeck.MEMORY_FETCH, pilotdeck.TITLE_GENERATION}, set(found)
+        )
+        self.assertEqual(
+            "synthetic-memory-model",
+            found[pilotdeck.MEMORY_FETCH]["model"],
+            "the model now comes from the request body, not from an inference",
+        )
+        self.assertEqual("driver", found[pilotdeck.MEMORY_FETCH]["model_source"])
+        self.assertEqual(
+            "response_format",
+            found[pilotdeck.MEMORY_FETCH]["label_source"],
+            "the row says which marker named it",
+        )
+        self.assertEqual(
+            "metadata.purpose", found[pilotdeck.TITLE_GENERATION]["label_source"]
+        )
+        self.assertEqual("title_generation", found[pilotdeck.TITLE_GENERATION]["label"])
+
+    def test_a_request_whose_body_was_not_read_is_still_counted(self):
+        unread = egress("2026-01-15T10:00:16.400Z")
+        unread["body"] = "unread"  # oversized, or a client that left mid-request
+        log = lines(
+            {
+                "at": "2026-01-15T10:00:00.000Z",
+                "kind": "event",
+                "sessionKey": "session-x",
+                "seq": 0,
+                "final": False,
+                "event": {"type": "turn_started", "runId": "run-1"},
+            },
+            unread,
+            turn(at="2026-01-15T10:00:20.000Z"),
+        )
+        _, rows = parse(log)
+        hidden = by_type(rows, pilotdeck.HIDDEN_CALL)
+        self.assertEqual(
+            1, len(hidden), "a request counted without its body is still a hidden call"
+        )
+        self.assertIsNone(hidden[0]["model"])
 
     def test_a_session_id_names_the_driver_log_not_a_shared_stream(self):
         requests = lines(egress("2026-01-15T10:00:00.000Z"))

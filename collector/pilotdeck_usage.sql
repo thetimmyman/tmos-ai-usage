@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS pilotdeck_usage (
     role                TEXT    NOT NULL CHECK (role IN ('main', 'subagent', 'background')),
     model               TEXT,
     model_source        TEXT    CHECK (model_source IS NULL OR model_source IN ('gateway', 'driver')),
+    -- which marker named the call: response_format and metadata.purpose are the
+    -- runtime's own, configured-model is the operator's declaration, driver is the
+    -- log stating it outright.
+    label_source        TEXT    CHECK (label_source IS NULL OR length(label_source) <= 64),
     provider            TEXT,
     subagent_type       TEXT,
     label               TEXT,
@@ -56,12 +60,12 @@ CREATE INDEX IF NOT EXISTS pilotdeck_usage_call_type_started
 -- conflict target is the identity, so a second import of the same call adds no row.
 INSERT INTO pilotdeck_usage (
     app, session_id, call_type, call_hash, source_sha256, role, model, model_source,
-    provider, subagent_type, label, input_tokens, output_tokens, cache_read_tokens,
+    label_source, provider, subagent_type, label, input_tokens, output_tokens, cache_read_tokens,
     cache_write_tokens, reasoning_tokens, tokens_observed, started_at_ms, finished_at_ms,
     duration_ms, session_offset_ms, outcome, final_event_missing, record_hash
 ) VALUES (
     :app, :session_id, :call_type, :call_hash, :source_sha256, :role, :model, :model_source,
-    :provider, :subagent_type, :label, :input_tokens, :output_tokens, :cache_read_tokens,
+    :label_source, :provider, :subagent_type, :label, :input_tokens, :output_tokens, :cache_read_tokens,
     :cache_write_tokens, :reasoning_tokens, :tokens_observed, :started_at_ms, :finished_at_ms,
     :duration_ms, :session_offset_ms, :outcome, :final_event_missing, :record_hash
 ) ON CONFLICT (session_id, call_hash) DO NOTHING;

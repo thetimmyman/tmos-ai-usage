@@ -175,6 +175,7 @@ RECORD_FIELDS = frozenset(
         "source_sha256",
         "role",
         "model",
+        "label_source",
         "model_source",
         "provider",
         "subagent_type",
@@ -336,6 +337,11 @@ def label_of(*candidates):
     return None
 
 
+def short_text(value):
+    """A short string field from a log record, or None."""
+    return value.strip()[:64] if isinstance(value, str) and value.strip() else None
+
+
 def call_type_of(label):
     """The call type a driver's label names, or None when it names no known one."""
     return LABELS.get(label) if label else None
@@ -353,6 +359,7 @@ def build_row(
     tokens=None,
     model=None,
     model_source=None,
+    label_source=None,
     provider=None,
     subagent_type=None,
     label=None,
@@ -374,6 +381,7 @@ def build_row(
         "role": role,
         "model": model,
         "model_source": model_source,
+        "label_source": label_source,
         "provider": provider,
         "subagent_type": subagent_type,
         "label": label,
@@ -975,6 +983,7 @@ class PilotDeckLogParser:
             if isinstance(record.get("provider"), str)
             else None,
             label=raw_label,
+            label_source=short_text(record.get("label_source")) or "driver",
             outcome=OUTCOME_SUCCESS
             if record.get("outcome") == "success"
             else OUTCOME_UNKNOWN,
@@ -1017,6 +1026,7 @@ class PilotDeckLogParser:
                 "method": method.upper(),
                 "path": path,
                 "label": raw_label,
+                "label_source": short_text(record.get("label_source")),
                 "model": record.get("model")
                 if isinstance(record.get("model"), str)
                 else None,
@@ -1161,6 +1171,7 @@ class PilotDeckLogParser:
                     model_source="driver" if request["model"] else None,
                     provider=request["provider"],
                     label=request["label"],
+                    label_source=request["label_source"],
                 )
                 row["source_sha256"] = request["sha256"]
                 rows.append(row)
