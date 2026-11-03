@@ -1,0 +1,30 @@
+{"at": "2026-01-15T10:00:00.000Z", "kind": "hello_ok", "serverVersion": "1.1.0-synthetic"}
+{"at": "2026-01-15T10:00:00.100Z", "kind": "event", "sessionKey": "session-alpha", "seq": 0, "final": false, "event": {"type": "turn_started", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:00.120Z", "kind": "event", "sessionKey": "session-alpha", "seq": 1, "final": false, "event": {"type": "model_selection_changed", "model": "synthetic-model", "provider": "local-endpoint", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:00.300Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions", "call_type": "memory_fetch"}
+{"at": "2026-01-15T10:00:01.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 2, "final": false, "event": {"type": "model_request_started", "model": "synthetic-model", "provider": "local-endpoint", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:01.020Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions"}
+{"at": "2026-01-15T10:00:01.050Z", "kind": "event", "sessionKey": "session-alpha", "seq": 3, "final": false, "event": {"type": "context_budget", "used": 10800, "total": 128000, "state": "ok", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:02.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 40, "final": false, "event": {"type": "permission_request", "requestId": "req-1", "toolName": "write_file", "payload": {"path": "report.md"}, "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:02.010Z", "kind": "tmos_receipt", "requestId": "req-1", "tool": "write_file", "decision": "allow", "reason": "synthetic grant"}
+{"at": "2026-01-15T10:00:02.500Z", "kind": "event", "sessionKey": "session-alpha", "seq": 41, "final": false, "event": {"type": "tool_call_finished", "toolCallId": "call-1", "ok": true, "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:03.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 60, "final": false, "event": {"type": "agent_status", "event": "subagent_started", "detail": {"subagentId": "sub-0001", "subagentType": "explore", "toolCallId": "call-2"}, "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:05.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 90, "final": false, "event": {"type": "agent_status", "event": "subagent_status", "detail": {"subagentId": "sub-0001", "subagentType": "explore", "status": "waiting_model", "durationMs": 2000}, "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:12.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 120, "final": false, "event": {"type": "agent_status", "event": "subagent_completed", "detail": {"subagentId": "sub-0001", "subagentType": "explore", "success": true, "durationMs": 9000}, "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:15.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 200, "final": false, "event": {"type": "model_request_started", "model": "synthetic-model", "provider": "local-endpoint", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:15.015Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions"}
+{"at": "2026-01-15T10:00:15.900Z", "port": 9932, "method": "POST", "path": "/v1/chat/completions", "call_type": "judge_evaluation", "model": "synthetic-judge-model", "provider": "local-endpoint"}
+{"at": "2026-01-15T10:00:16.400Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions"}
+{"at": "2026-01-15T10:00:17.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 260, "final": false, "event": {"type": "assistant_text_delta", "delta": "SYNTHETIC-SECRET-NEVER-PROJECTED", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:18.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 280, "final": false, "event": {"type": "assistant_block", "text": "SYNTHETIC-SECRET-NEVER-PROJECTED", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:19.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 299, "final": false, "event": {"type": "file_artifacts", "artifacts": [{"id": "artifact-1", "name": "report.md", "operation": "updated", "status": "complete", "size": 428}], "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:20.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 300, "final": false, "event": {"type": "turn_completed", "usage": {"inputTokens": 1280, "outputTokens": 340, "totalTokens": 1620}, "finishReason": "completed", "runId": "run-alpha-1"}}
+{"at": "2026-01-15T10:00:20.006Z", "kind": "event", "sessionKey": "session-alpha", "seq": 301, "final": true, "event": {"type": "turn_completed", "usage": {"inputTokens": 1280, "outputTokens": 340, "totalTokens": 1620}, "finishReason": "completed"}}
+{"at": "2026-01-15T10:00:25.000Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions", "call_type": "title_generation"}
+{"at": "2026-01-15T10:00:30.000Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions", "call_type": "memory"}
+{"at": "2026-01-15T10:00:30.500Z", "kind": "tmos_receipt", "requestId": "req-2", "tool": "run_command", "decision": "deny", "reason": "synthetic grant excludes it"}
+{"at": "2026-01-15T10:01:00.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 0, "final": false, "event": {"type": "turn_started", "runId": "run-alpha-2"}}
+{"at": "2026-01-15T10:01:00.500Z", "kind": "event", "sessionKey": "session-alpha", "seq": 1, "final": false, "event": {"type": "model_request_started", "model": "synthetic-model", "provider": "local-endpoint", "runId": "run-alpha-2"}}
+{"at": "2026-01-15T10:01:00.520Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions"}
+{"at": "2026-01-15T10:01:10.000Z", "kind": "event", "sessionKey": "session-alpha", "seq": 42, "final": true, "event": {"type": "turn_completed", "usage": {"inputTokens": 640, "outputTokens": 12, "totalTokens": 652}, "finishReason": "completed", "runId": "run-alpha-2"}}
+{"at": "2026-01-15T10:01:12.000Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions", "call_type": "memory_fetch", "model": "synthetic-model", "provider": "local-endpoint", "usage": {"inputTokens": 90, "outputTokens": 8}}
