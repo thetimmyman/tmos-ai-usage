@@ -63,6 +63,39 @@ recognized records. It does **not** scan Downloads automatically or accept every
 provider's JSON format. Console organization reports are distinct from personal
 Go subscription activity. See [report imports](ECONOMICS.md#reports).
 
+**PilotDeck driver logs.** A PilotDeck gateway reports usage for the turn you
+asked for and nothing else: its memory gate and indexer, session-title
+synthesis and (when routed) its tokenSaver judge reach the model endpoint
+without a gateway event, so a ledger that reads the gateway alone undercounts
+the load it places on that endpoint. `collector/pilotdeck.py` reads the
+driver's event log together with the egress request log in front of the
+endpoint:
+
+```sh
+python3 collector/pilotdeck.py \
+  --log driver.jsonl --log egress.jsonl \
+  --ledger ~/.local/state/tmos-ai-usage/pilotdeck-ledger.json \
+  --summary ~/.local/state/tmos-ai-usage/pilotdeck-summary.json
+```
+
+Read a session's driver log and the egress log **in the same run**: a request is
+only hidden relative to the turns the driver recorded there, and one shared egress
+stream spread over separate runs would be counted once per session. A capture that
+records no session id says so once with `--session-per-log`, which names each log
+after its file.
+
+It writes one row per user turn (with the tokens the gateway reported), one
+per sub-agent run and one per upstream request the gateway did not report,
+each tagged `app=pilotdeck`, model, session, call type and tokens. A hidden
+call is **counted, never priced**, unless the driver labelled it with usage:
+the egress log carries no bodies and no usage, so token totals stay a lower
+bound while the calls themselves are complete. A model is never inferred —
+the judge may run on a different model from the turn. Re-importing a log, or
+an appended copy of it, adds nothing and retracts a judgement the grown log
+overturns; a truncated log is refused with a named reason, and `--strict`
+refuses the whole import. `collector/pilotdeck_usage.sql` is the same row for
+a SQL store, with the unique `(session_id, call_hash)` constraint.
+
 **Task capture.** In Setup, choose **Enable** beside **Task command** to install
 `tmos-ai-task` into `~/.local/bin/`. It links the bundled wrapper and refuses an unrelated existing command. Ensure that directory
 is on your PATH, then run `tmos-ai-task --help`. You choose the native agent command

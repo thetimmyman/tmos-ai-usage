@@ -1,0 +1,4 @@
+{"at": "2026-01-15T10:00:00.000Z", "kind": "event", "seq": 0, "final": false, "event": {"type": "turn_started", "runId": "run-u-1"}}
+{"at": "2026-01-15T10:00:00.500Z", "kind": "event", "seq": 1, "final": false, "event": {"type": "model_request_started", "model": "synthetic-model", "provider": "local-endpoint", "runId": "run-u-1"}}
+{"at": "2026-01-15T10:00:00.520Z", "port": 9931, "method": "POST", "path": "/v1/chat/completions"}
+{"at": "2026-01-15T10:00:05.000Z", "kind": "event", "seq": 60, "final": true, "event": {"type": "turn_completed", "usage": {"inputTokens": 100, "outputTokens": 20}, "finishReason": "completed", "runId": "run-u-1"}}
