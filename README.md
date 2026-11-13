@@ -1,4 +1,4 @@
-# TMOS AI Usage
+# <img src="assets/plugins.svg" width="40" height="40" alt=""> TMOS AI Usage
 
 AI subscription budgets, usage and comparisons in one Omarchy bar panel.
 
