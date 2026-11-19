@@ -319,9 +319,9 @@ def scan_stats(c, now=None, root=None, state_dir=None):
     stats = c._absorb(parts, now)
     stats.source = "~/.gemini/antigravity-cli/brain"
     stats.scan = {**scanned, "files_partial": partial}
-    result = stats.finish(now)
+    result = stats.finish(now, "antigravity", state_dir)
     if result["available"]:
-        result["note"] = "Local activity only. Tokens are reported input + output; cache overlap and model names are unspecified. History may include other sign-ins."
+        result["note"] = (result.get("note", "") + " Local activity only. Tokens are reported input + output; cache overlap and model names are unspecified. History may include other sign-ins.").strip()
         if partial:
             mib = MAX_TRANSCRIPT // (1024 * 1024)
             result["note"] += (f" Incomplete: {partial} transcript(s) over {mib} MiB; only the most recent {mib} MiB"

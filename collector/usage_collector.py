@@ -106,6 +106,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -720,18 +721,14 @@ def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
 # borrows another provider's history, and a scan that finds nothing reports nothing, not zero.
 
 STATS_DAYS = 30
-STATS_CACHE_VERSION = 6
-STATS_MAX_FILES = 600
+STATS_CACHE_VERSION = 7
+LIMIT_SNAPSHOT_MAX_FILES = 600
 
 
 def _recent_files(
     base: Path, pattern: str, since: float, include=None, limit=None
 ) -> list[Path]:
-    """Files under `base` matching `pattern`, newest first, bounded, never fatal.
-
-    `include` filters before the bound applies, so a file it rejects never takes a place. The bound
-    is `limit`, else `STATS_MAX_FILES`; 0 means every file.
-    """
+    """Files touched inside the window, newest first. History reads the entire window."""
     if not base.is_dir():
         return []
     found: list[tuple[float, Path]] = []
@@ -743,27 +740,51 @@ def _recent_files(
         if mtime >= since and (include is None or include(path)):
             found.append((mtime, path))
     found.sort(key=lambda item: item[0], reverse=True)
-    bound = STATS_MAX_FILES if limit is None else limit
-    return [path for _, path in (found[:bound] if bound else found)]
+    return [path for _, path in found[:limit]]
 
 
-def _jsonl_rows(path: Path) -> list[dict]:
-    """Every parseable JSON object in a JSONL file. An unreadable file yields nothing."""
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return []
-    rows = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
+def _objects(lines):
+    for line in lines:
         try:
             row = json.loads(line)
-        except ValueError:
+        except (ValueError, UnicodeDecodeError):
             continue
         if isinstance(row, dict):
-            rows.append(row)
-    return rows
+            yield row
+
+
+def _jsonl_rows(path: Path):
+    """Stream parseable objects without keeping transcript contents in memory."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            yield from _objects(stream)
+    except OSError:
+        return
+
+
+MAX_ROLLOUT_BYTES = 512 * 1024 * 1024
+
+
+def _codex_rows(path: Path):
+    if path.suffix != ".zst":
+        yield from _jsonl_rows(path)
+        return
+    # Cap the decoder's window and the bytes emitted, including an unterminated last line.
+    with subprocess.Popen(["zstd", "-dcq", "-M128MB", "--", str(path)],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+        try:
+            def lines():
+                remaining = MAX_ROLLOUT_BYTES
+                while line := proc.stdout.readline(remaining + 1):
+                    remaining -= len(line)
+                    if remaining < 0:
+                        raise OSError("rollout exceeds decompression limit")
+                    yield line
+            yield from _objects(lines())
+            if proc.wait() != 0:
+                raise OSError("could not decompress rollout")
+        finally:
+            proc.kill()
 
 
 def _local_day(when: datetime) -> str:
@@ -821,12 +842,13 @@ def _scan_transcripts(
     pattern: str = "*.jsonl",
     include=None,
     siblings=None,
+    candidates=None,
 ) -> tuple[list[dict], dict]:
     """Per-file contributions for files touched inside the window, reusing the cache.
 
     `pattern` is the file kind a provider keeps its history in: JSONL rollouts for Claude, Codex and
     Command Code, plain JSON documents for Cline. `include` keeps only the files that stand for a
-    unit of history, before the file cap applies. `siblings` names every file a contribution reads
+    unit of history, before reading. `siblings` names every file a contribution reads
     besides its own, so a change to any of them refreshes the cached contribution.
     """
     cache = _load_stats_cache(state_dir)
@@ -835,7 +857,8 @@ def _scan_transcripts(
     out: list[dict] = []
     seen: set[str] = set()
     scanned = cached = 0
-    for path in _recent_files(base, pattern, cutoff, include):
+    files = candidates if candidates is not None else _recent_files(base, pattern, cutoff, include)
+    for path in files:
         key = str(path)
         seen.add(key)
         try:
@@ -855,6 +878,8 @@ def _scan_transcripts(
             continue
         raw = contribution(path, now)
         fresh = _json_safe(raw)
+        if "session_id" in raw:
+            fresh["session_id"] = raw["session_id"]
         fresh["size"] = info.st_size
         fresh["mtime"] = info.st_mtime
         if signature is not None:
@@ -872,7 +897,7 @@ def _scan_transcripts(
         out.append(fresh)
         scanned += 1
     # Forget files that vanished or aged out — but only under this base, since the cache is shared.
-    prefix = str(base)
+    prefix = str(base) + os.sep
     for key in [k for k in entries if k.startswith(prefix) and k not in seen]:
         entries.pop(key, None)
     cache["files"] = entries
@@ -1021,17 +1046,54 @@ class _Stats:
     def add_prompt(self, when: datetime, session: str) -> None:
         self._day(when, session)["prompts"] += 1
 
-    def finish(self, now: datetime) -> dict:
+    def finish(self, now: datetime, provider: str, state_dir: Path | None, *, incomplete=False) -> dict:
+        """Keep observed days after transcripts age out, replacing days we can recompute."""
+        path = (state_dir or STATE_DIR) / f"daily-{provider}.json"
+        stored = read_json(path)
+        calendar_day = now.astimezone().date()
+        today = calendar_day.isoformat()
+        keep = (calendar_day - timedelta(days=90)).isoformat()
+        start = (calendar_day - timedelta(days=STATS_DAYS - 1)).isoformat()
+        history = {
+            date: row for date, row in (stored if isinstance(stored, dict) else {}).items()
+            if keep <= date <= today and isinstance(row, dict)
+            and isinstance(row.get("sessions"), list)
+        }
+        refreshed = set()
+        for date, row in self.days.items():
+            if not start <= date <= today:
+                continue
+            old = history.get(date)
+            if incomplete and old and (row["tokens"] < old["tokens"] or row["prompts"] < old["prompts"]
+                                       or len(row["sessions"]) < len(old["sessions"])):
+                continue
+            history[date] = {**row, "sessions": sorted(row["sessions"])}
+            refreshed.add(date)
+        write_failed = False
+        if history != (stored or {}):
+            try:
+                write_cache(history, path)
+            except OSError:
+                write_failed = True
+        visible = {date: row for date, row in history.items() if start <= date}
+        retained = len(visible.keys() - refreshed)
+        if retained:
+            self.scan["retained_days"] = retained
         union: set = set()
-        for row in self.days.values():
-            union |= row["sessions"]
+        for row in visible.values():
+            union.update(row["sessions"])
         days = {
             date: {**row, "sessions": len(row["sessions"])}
-            for date, row in self.days.items()
+            for date, row in visible.items()
         }
-        return _stats_document(
+        result = _stats_document(
             self.source, days, self.models, self.scan, now, sessions_total=len(union)
         )
+        if retained:
+            result["note"] = f"{retained} day(s) from stored rollups. Models reflect current sources."
+        if write_failed:
+            result["note"] = (result.get("note", "") + " Could not save daily rollups.").strip()
+        return result
 
 
 def _claude_prompt(row: dict) -> bool:
@@ -1063,6 +1125,9 @@ def _claude_contribution(path: Path, now: datetime) -> dict:
     replies: dict[str, tuple] = {}
     prompts: list[datetime] = []
     for index, row in enumerate(_jsonl_rows(path)):
+        session_id = row.get("sessionId")
+        if isinstance(session_id, str) and session_id:
+            session = session_id
         when = _parse_iso(row.get("timestamp"))
         if when is None:
             continue
@@ -1086,11 +1151,14 @@ def _claude_contribution(path: Path, now: datetime) -> dict:
             replies[key] = (when, message.get("model"), bucket, bucket["total_tokens"])
         if _claude_prompt(row):
             prompts.append(when)
+    # Subagent transcripts share their parent's sessionId but carry their own usage.
+    if path.stem.startswith("agent-"):
+        session = f"{session}/{path.stem}"
     for when, model, bucket, total in replies.values():
         stats.add_tokens(when, session, model, bucket, total)
     for when in prompts:
         stats.add_prompt(when, session)
-    return {"days": stats.days, "models": stats.models}
+    return {"session_id": session, "days": stats.days, "models": stats.models}
 
 
 def _codex_contribution(path: Path, now: datetime) -> dict:
@@ -1102,21 +1170,15 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
     ignoring repeated cumulative snapshots. `turn_token_usage` and `thread_token_usage` are also
     cumulative and are never summed.
     """
-    stats = _Stats("")
-    session = path.stem
+    session = path.name.removesuffix(".zst").removesuffix(".jsonl")
     model: object = None
-    rows = _jsonl_rows(path)
-    has_usage_records = any(
-        row.get("type") == "token_usage_record"
-        and isinstance(row.get("payload"), dict)
-        and isinstance(row["payload"].get("usage"), dict)
-        for row in rows
-    )
+    canonical, legacy = _Stats(""), _Stats("")
+    has_usage_records = False
     seen_responses: set[str] = set()
     previous_cumulative: int | None = None
     previous_legacy_usage: tuple | None = None
 
-    def add_usage(when: datetime, usage: dict) -> None:
+    def add_usage(target: _Stats, when: datetime, usage: dict) -> None:
         bucket = {
             "input_tokens": _num(usage.get("input_tokens")) or 0,
             "output_tokens": _num(usage.get("output_tokens")) or 0,
@@ -1129,9 +1191,9 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
             bucket["input_tokens"] + bucket["output_tokens"]
         )
         bucket["total_tokens"] = total
-        stats.add_tokens(when, session, model, bucket, total)
+        target.add_tokens(when, session, model, bucket, total)
 
-    for row in rows:
+    for row in _codex_rows(path):
         when = _parse_iso(row.get("timestamp"))
         if when is None:
             continue
@@ -1144,16 +1206,16 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
                 model = payload_model
             continue
         if kind == "token_usage_record":
-            if not has_usage_records:
-                continue
             response_id = payload.get("response_id")
             raw_usage = payload.get("usage")
+            if not isinstance(raw_usage, dict):
+                continue
+            has_usage_records = True
             if isinstance(response_id, str) and response_id:
                 if response_id in seen_responses:
                     continue
                 seen_responses.add(response_id)
-            if isinstance(raw_usage, dict):
-                add_usage(when, raw_usage)
+            add_usage(canonical, when, raw_usage)
             continue
         if kind != "event_msg":
             continue
@@ -1161,7 +1223,8 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
         if event not in ("token_count", "task_started"):
             continue
         if event == "task_started":
-            stats.add_prompt(when, session)
+            canonical.add_prompt(when, session)
+            legacy.add_prompt(when, session)
             continue
         if has_usage_records:
             # token_count is a repeatable UI snapshot when canonical response records exist.
@@ -1184,8 +1247,9 @@ def _codex_contribution(path: Path, now: datetime) -> dict:
         elif signature == previous_legacy_usage:
             continue
         previous_legacy_usage = signature
-        add_usage(when, last)
-    return {"days": stats.days, "models": stats.models}
+        add_usage(legacy, when, last)
+    chosen = canonical if has_usage_records else legacy
+    return {"days": chosen.days, "models": chosen.models}
 
 
 def _absorb(parts: list[dict], now: datetime) -> _Stats:
@@ -1412,9 +1476,7 @@ def _scan_pi_transcripts(
 
     The files are where Pi writes them (`pi_activity.sessions_dir`). A forked or cloned session's
     copies of a scanned ancestor's entries count once, in the ancestor, so a cached contribution
-    also depends on which of its ancestors are scanned and on their files. The file cap keeps the
-    newest files, and every ancestor of theirs in the window too, so a cap never makes several
-    forks count the history of an ancestor it left out.
+    also depends on which of its ancestors are scanned and on their files.
     """
     base = base or pi_activity.sessions_dir()
     if not base.is_dir():
@@ -1427,8 +1489,7 @@ def _scan_pi_transcripts(
     scanned = cached = 0
     contribution_fn = _pi_contribution_for(provider)
     prefix = f"pi:{provider}:"
-    candidates = _recent_files(base, "*.jsonl", cutoff, limit=0)
-    files = pi_activity.with_ancestors(candidates[:STATS_MAX_FILES], candidates)
+    files = _recent_files(base, "*.jsonl", cutoff)
     lineage = pi_activity.Lineage(files)
     for path in files:
         key = prefix + str(path)
@@ -1475,13 +1536,35 @@ def scan_claude_stats(
     root: Path | str | None = None,
     state_dir: Path | None = None,
 ) -> dict:
+    """Read the default projects tree plus CLAUDE_CONFIG_DIR/projects and extra project trees.
+
+    Set claude_projects to a list of directory paths in the state directory's history-sources.json.
+    An explicit root selects just that tree.
+    """
     now = now or _now()
-    base = Path(root) if root else Path(os.path.expanduser("~/.claude/projects"))
-    parts, scan = _scan_transcripts(base, now, _claude_contribution, state_dir)
-    stats = _absorb(parts, now)
-    stats.source = "~/.claude/projects"
+    roots = [Path(root)] if root else [Path.home() / ".claude/projects"]
+    if root is None:
+        configured = os.environ.get("CLAUDE_CONFIG_DIR")
+        if configured:
+            roots.append(Path(configured).expanduser() / "projects")
+        settings = read_json((state_dir or STATE_DIR) / "history-sources.json")
+        extras = settings.get("claude_projects") if isinstance(settings, dict) else None
+        if isinstance(extras, list):
+            roots.extend(Path(p).expanduser() for p in extras if isinstance(p, str) and p)
+    sessions = {}
+    scan = {"files_scanned": 0, "files_cached": 0}
+    for base in dict.fromkeys(roots):
+        parts, counts = _scan_transcripts(base, now, _claude_contribution, state_dir)
+        for key in scan:
+            scan[key] += counts[key]
+        for part in parts:
+            key = part["session_id"]
+            if key not in sessions or part["mtime"] > sessions[key]["mtime"]:
+                sessions[key] = part
+    stats = _absorb(list(sessions.values()), now)
+    stats.source = "~/.claude/projects" if len(roots) == 1 else "Claude Code project directories"
     stats.scan = scan
-    return stats.finish(now)
+    return stats.finish(now, "claude-code", state_dir)
 
 
 def scan_codex_stats(
@@ -1491,11 +1574,35 @@ def scan_codex_stats(
 ) -> dict:
     now = now or _now()
     base = Path(root) if root else Path(os.path.expanduser("~/.codex/sessions"))
-    parts, scan = _scan_transcripts(base, now, _codex_contribution, state_dir)
+    cutoff = (now - timedelta(days=STATS_DAYS)).timestamp()
+    files = _recent_files(base, "*.jsonl", cutoff)
+    plain = set(files)
+    files.extend(p for p in _recent_files(base, "*.jsonl.zst", cutoff)
+                 if p.with_suffix("") not in plain)
+    failed = 0
+
+    def contribution(path, when):
+        nonlocal failed
+        try:
+            return _codex_contribution(path, when)
+        except OSError:
+            failed += 1
+            return {"cacheable": False}
+
+    parts, scan = _scan_transcripts(base, now, contribution, state_dir, candidates=files)
     stats = _absorb(parts, now)
     stats.source = "~/.codex/sessions"
     stats.scan = scan
-    return stats.finish(now)
+    result = stats.finish(now, "codex", state_dir, incomplete=bool(failed))
+    if failed:
+        first = result["totals"]["first_date"] or "unknown"
+        result["note"] = (f"Incomplete history: {failed} rollout(s) could not be read within "
+                          f"the decompression limit. First observed day: {first}. " + result.get("note", "")).strip()
+        result["coverage_days"] = (
+            (now.astimezone().date() - datetime.fromisoformat(first).date()).days + 1
+            if result["daily"] else 0
+        )
+    return result
 
 
 def _command_code_contribution(path: Path, now: datetime) -> dict:
@@ -1562,7 +1669,7 @@ def scan_command_code_stats(
         " + " + _pi_source() if pi_included else ""
     )
     stats.scan = scan
-    result = stats.finish(now)
+    result = stats.finish(now, "command-code", state_dir)
     return _pi_followed(result) if root is None else result
 
 
@@ -1782,12 +1889,10 @@ def scan_opencode_stats(
                 stats = _absorb(pi_parts, now)
                 stats.source = _pi_source()
                 stats.scan = {**pi_scan, **_pi_share(pi_parts, now)}
-                return _pi_followed(stats.finish(now))
-        missing = _no_stats(
-            "",
-            {},
-            f"OpenCode keeps its sessions in {db}, which does not exist on this machine",
-        )
+                return _pi_followed(stats.finish(now, "opencode-go", state_dir))
+        missing = _Stats("").finish(now, "opencode-go", state_dir)
+        missing["note"] = (f"OpenCode keeps its sessions in {db}, which does not exist on this machine. "
+                           + missing.get("note", ""))
         return _pi_followed(missing) if root is None else missing
     cache = _load_stats_cache(state_dir)
     key = str(db)
@@ -1824,7 +1929,7 @@ def scan_opencode_stats(
         " + " + _pi_source() if pi_included else ""
     )
     stats.scan = scan
-    result = stats.finish(now)
+    result = stats.finish(now, "opencode-go", state_dir)
     return _pi_followed(result) if root is None else result
 
 
@@ -1879,7 +1984,7 @@ def scan_cline_stats(
     stats = _absorb(parts, now)
     stats.source = "~/.cline/data/sessions"
     stats.scan = scan
-    return stats.finish(now)
+    return stats.finish(now, "clinepass", state_dir)
 
 
 def _has_window(limits: dict) -> bool:
@@ -1907,7 +2012,8 @@ def codex_local_rate_limits(
     base = Path(root) if root else Path(os.path.expanduser("~/.codex/sessions"))
     newest: tuple[datetime, dict] | None = None
     newest_with_windows: tuple[datetime, dict] | None = None
-    for path in _recent_files(base, "*.jsonl", (now - timedelta(days=7)).timestamp()):
+    for path in _recent_files(base, "*.jsonl", (now - timedelta(days=7)).timestamp(),
+                              limit=LIMIT_SNAPSHOT_MAX_FILES):
         for row in _jsonl_rows(path):
             if str(row.get("type")) != "event_msg":
                 continue
@@ -3922,6 +4028,8 @@ def _selftest() -> int:
     import shutil  # test-only helpers, kept out of the collector's import surface
     import tempfile
 
+    # These transcript fixtures span two days. Collect after their final event.
+    history_now = datetime(2026, 9, 23, 12, tzinfo=timezone.utc)
     transcripts = FIXTURES / "transcripts"
     scratch: list[Path] = []
 
@@ -4023,7 +4131,7 @@ def _selftest() -> int:
 
     command_tree = staged("command-code")
     command_stats = scan_command_code_stats(
-        now, command_tree, command_tree.parent / "state"
+        history_now, command_tree, command_tree.parent / "state"
     )
     check(
         "command-code scan: end-to-end history from a rollout tree",
@@ -4155,8 +4263,8 @@ def _selftest() -> int:
 
     claude_tree = staged("claude")
     state = claude_tree.parent / "state"
-    first = scan_claude_stats(now, claude_tree, state)
-    second = scan_claude_stats(now, claude_tree, state)
+    first = scan_claude_stats(history_now, claude_tree, state)
+    second = scan_claude_stats(history_now, claude_tree, state)
     model_ids = [row["id"] for row in first["models"]]
     day_tokens = [row["tokens"] for row in first["daily"]]
     check(
