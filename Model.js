@@ -66,7 +66,11 @@ function parseDocument(text, mode) {
   rows = []
   reportImport = normalizeImport(doc.report_import, "report")
   outcomeImport = normalizeImport(doc.outcome_import, "outcome")
-  for (i = 0; i < doc.providers.length; i++) rows.push(normalizeProvider(doc.providers[i], observedAt, reportImport, outcomeImport))
+  for (i = 0; i < doc.providers.length; i++) {
+    var provider = normalizeProvider(doc.providers[i], observedAt, reportImport, outcomeImport)
+    provider.outcomeModels = doc.outcome_models || null
+    rows.push(provider)
+  }
   rows = (mode || doc.comparison_mode) === "activity" ? Value.rankActivity(rows) : Value.rankProviders(rows, doc.economics_context)
   return { ok: true, error: "", providers: rows, observedAt: observedAt, totals: normalizeTotals(doc.totals) }
 }

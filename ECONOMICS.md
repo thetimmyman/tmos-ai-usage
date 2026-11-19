@@ -284,7 +284,9 @@ workload cohorts and coverage; logged turns are utilization, not model quality.
 ## Observed cost per validated outcome
 
 In Inference X-RAY, open Overview for model rows ordered by estimated dollars per
-validation. Select a provider for its total and models. Each row shows the number
+validation. Overview pools a model’s turns, allocated fees and outcomes across all
+its providers, including plans with no validations. Any missing allocation keeps
+the pooled cost unknown. Select a provider for its own total and model rows. Each row shows the number
 validated, the number of observed tasks and turns per validation. Fewer than five
 validations carry a provisional label. The displayed interval is the producer’s
 observation window. A saved fee is prorated over the UTC calendar months it
