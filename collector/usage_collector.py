@@ -30,6 +30,8 @@ Per-provider record (the contract the QML reads):
 
 A provider TMOS reads no transcript from carries `"available": false` and the reason, never an
 empty chart and never a fabricated zero.
+An incomplete Codex archive scan reports `coverage_days: 0` with a reason, while keeping the
+activity that could be observed or retained.
 
 Document level:
 
@@ -765,6 +767,10 @@ def _jsonl_rows(path: Path):
 MAX_ROLLOUT_BYTES = 512 * 1024 * 1024
 
 
+class _RolloutDecodeLimitError(OSError):
+    pass
+
+
 def _codex_rows(path: Path):
     if path.suffix != ".zst":
         yield from _jsonl_rows(path)
@@ -778,7 +784,7 @@ def _codex_rows(path: Path):
                 while line := proc.stdout.readline(remaining + 1):
                     remaining -= len(line)
                     if remaining < 0:
-                        raise OSError("rollout exceeds decompression limit")
+                        raise _RolloutDecodeLimitError("rollout exceeds decompression limit")
                     yield line
             yield from _objects(lines())
             if proc.wait() != 0:
@@ -1579,29 +1585,29 @@ def scan_codex_stats(
     plain = set(files)
     files.extend(p for p in _recent_files(base, "*.jsonl.zst", cutoff)
                  if p.with_suffix("") not in plain)
-    failed = 0
+    failures: dict[str, int] = {}
 
     def contribution(path, when):
-        nonlocal failed
         try:
             return _codex_contribution(path, when)
+        except _RolloutDecodeLimitError:
+            reason = "exceeded the decompression limit"
+        except FileNotFoundError:
+            reason = "could not be decoded because zstd was not found"
         except OSError:
-            failed += 1
-            return {"cacheable": False}
+            reason = "could not be decoded"
+        failures[reason] = failures.get(reason, 0) + 1
+        return {"cacheable": False}
 
     parts, scan = _scan_transcripts(base, now, contribution, state_dir, candidates=files)
     stats = _absorb(parts, now)
     stats.source = "~/.codex/sessions"
     stats.scan = scan
-    result = stats.finish(now, "codex", state_dir, incomplete=bool(failed))
-    if failed:
-        first = result["totals"]["first_date"] or "unknown"
-        result["note"] = (f"Incomplete history: {failed} rollout(s) could not be read within "
-                          f"the decompression limit. First observed day: {first}. " + result.get("note", "")).strip()
-        result["coverage_days"] = (
-            (now.astimezone().date() - datetime.fromisoformat(first).date()).days + 1
-            if result["daily"] else 0
-        )
+    result = stats.finish(now, "codex", state_dir, incomplete=bool(failures))
+    if failures:
+        detail = ". ".join(f"{count} rollout(s) {reason}" for reason, count in sorted(failures.items()))
+        result["note"] = f"Incomplete history: {detail}. {result.get('note', '')}".strip()
+        result["coverage_days"] = 0
     return result
 
 
