@@ -127,7 +127,12 @@ def project(data, providers, now):
         for row in [total, *rows]:
             amount = spend
             if row is not total:
-                amount = spend * row['turns'] / turns if spend is not None and turns else None
+                if spend is not None and turns:
+                    amount = spend * row['turns'] / turns
+                elif spend is not None and fee == 0 and turns == 0:
+                    amount = 0.0
+                else:
+                    amount = None
             ratios(row, amount)
         result[provider] = dict(status='observed', start=data['start'], end=data['end'],
                                 total=total, models=rows)
