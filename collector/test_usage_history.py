@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,7 +22,11 @@ class UsageHistoryTest(unittest.TestCase):
         self.home = Path(scratch.name)
         self.state = self.home / "state"
         self.state.mkdir()
-        self.enterContext(patch.dict(os.environ, {"HOME": str(self.home), "CLAUDE_CONFIG_DIR": ""}))
+        self.addCleanup(time.tzset)
+        self.enterContext(patch.dict(os.environ, {
+            "HOME": str(self.home), "CLAUDE_CONFIG_DIR": "", "TZ": "UTC",
+        }))
+        time.tzset()
         self.enterContext(patch.object(collector, "STATE_DIR", self.state))
 
     def claude(self, name, days_ago, tokens, root=None):
@@ -58,6 +63,50 @@ class UsageHistoryTest(unittest.TestCase):
         self.assertEqual(stats["totals"]["tokens"], 38)
         self.assertEqual(stats["totals"]["sessions"], 2)
         self.assertIn("incomplete", stats["note"].lower())
+        self.assertIn("could not be decoded", stats["note"])
+
+    @unittest.skipUnless(shutil.which("zstd"), "requires the zstd command")
+    def test_early_activity_does_not_prove_coverage_after_recent_archive_fails(self):
+        root = self.home / ".codex/sessions"
+        root.mkdir(parents=True)
+        first_day = NOW - timedelta(days=29)
+        row = {"type": "token_usage_record", "timestamp": first_day.isoformat(),
+               "payload": {"usage": {"total_tokens": 17}}}
+        early = root / "rollout-early.jsonl"
+        early.write_text(json.dumps(row) + "\n")
+        healthy = collector.stats_for("codex", NOW)
+        self.assertEqual(healthy["coverage_days"], 30)
+
+        row["timestamp"] = NOW.isoformat()
+        recent = root / "rollout-recent.jsonl.zst"
+        data = json.dumps(row).encode() + b"\n"
+        recent.write_bytes(subprocess.check_output(["zstd", "-qc"], input=data))
+        with patch.object(collector, "MAX_ROLLOUT_BYTES", len(data) - 1):
+            # The same date can come from a scanned rollout or only from the stored rollup.
+            for prune in (False, True):
+                with self.subTest(pruned=prune):
+                    if prune:
+                        early.unlink()
+                    incomplete = collector.stats_for("codex", NOW)
+                    self.assertEqual(incomplete["daily"], healthy["daily"])
+                    self.assertEqual(incomplete["totals"]["first_date"], "2026-06-01")
+                    self.assertEqual(incomplete["coverage_days"], 0)
+                    self.assertIn("decompression limit", incomplete["note"])
+
+        recovered = collector.stats_for("codex", NOW)
+        self.assertEqual(recovered["coverage_days"], 30)
+        self.assertEqual([day["date"] for day in recovered["daily"]], ["2026-06-01", "2026-06-30"])
+
+    def test_missing_decoder_is_reported_separately_from_decompression_limit(self):
+        root = self.home / ".codex/sessions"
+        root.mkdir(parents=True)
+        (root / "rollout-recent.jsonl.zst").touch()
+        with patch.dict(os.environ, {"PATH": str(self.home)}):
+            incomplete = collector.stats_for("codex", NOW)
+        self.assertFalse(incomplete["available"])
+        self.assertEqual(incomplete["coverage_days"], 0)
+        self.assertIn("zstd was not found", incomplete["note"])
+        self.assertNotIn("decompression limit", incomplete["note"])
 
     def test_claude_roots_share_sessions_and_keep_distinct_agents(self):
         primary = self.home / ".claude/projects"

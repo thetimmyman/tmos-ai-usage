@@ -145,10 +145,13 @@ def attach(document, directory, now=None):
                   'Provisional: observed local turns / monthly subscription fee; incomplete harness coverage. Not task quality or cost per completed task.')
         if unfollowed is not None and row['provider'] in set(pi_activity.ALIASES.values()):
             reason += ' ' + pi_activity.unfollowed_note(unfollowed)
+        coverage_days = stats.get('coverage_days')
+        if coverage_days is None and pi_counts:
+            coverage_days = 30
         row['activity'] = {'observed_turns': turns,
                            'pi_turns': pi_turns,
                            'cli_turns': cli_turns, 'observed_sessions': sessions,
-                           'window_days': stats.get('coverage_days') or (30 if pi_counts else None), 'price': price,
+                           'window_days': coverage_days or None, 'price': price,
                            'source': source,
                            'first_date': total.get('first_date'), 'last_date': total.get('last_date'),
                            'reason': reason}

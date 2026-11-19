@@ -36,6 +36,16 @@ class SubscriptionValueTest(unittest.TestCase):
             self.assertIsNone(doc['providers'][0]['activity']['observed_turns'])
             for bad in [-1,float('nan'),float('inf')]:
                 with self.assertRaises(ValueError):v.save_price(d,'codex',bad,'month')
+
+    def test_pi_counts_do_not_restore_a_window_to_incomplete_codex_history(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            stats = {"available": True, "coverage_days": 0, "totals": {"prompts": 2}}
+            provider = {"provider": "codex", "stats": stats}
+            with patch("pi_activity.scan", return_value={"codex": {"turns": 3}}):
+                v.attach({"providers": [provider]}, state_dir)
+            self.assertEqual(provider["activity"]["observed_turns"], 5)
+            self.assertIsNone(provider["activity"]["window_days"])
+
     def test_invalid_config_does_not_claim_reference(self):
         now=datetime(2026,9,24,19,tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as d:
