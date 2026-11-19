@@ -94,7 +94,7 @@ Rectangle {
             })
         })
         return rows.sort(function(a, b) {
-            if (!a.value.model || !b.value.model) return a.value.model ? 1 : -1
+            if (!!a.value.model !== !!b.value.model) return a.value.model ? 1 : -1
             var x = a.value.usd_per_validated, y = b.value.usd_per_validated
             if (x !== y) return x === null ? 1 : y === null ? -1 : x - y
             x = a.value.turns_per_validated; y = b.value.turns_per_validated
@@ -242,7 +242,7 @@ Rectangle {
                     text: root.modelRows.length
                         ? root.modelRows[0].start + " to " + root.modelRows[0].end
                           + " · Observed sample. The estimated plan fee for this interval is split by observed turns. Fewer than five validations are provisional."
-                        : (root.providers.some(p => p.outcomeValue && p.outcomeValue.status === "invalid")
+                        : ((root.selected ? [root.selected] : root.providers).some(p => p.outcomeValue && p.outcomeValue.status === "invalid")
                            ? "Outcome export could not be read." : "No model outcome sample available.")
                 }
                 Repeater {

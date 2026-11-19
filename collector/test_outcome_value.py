@@ -13,7 +13,7 @@ class OutcomeValueTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         inbox = self.directory / 'outcome-events'
-        inbox.mkdir()
+        inbox.mkdir(mode=0o700)
         self.path = inbox / 'model-outcomes.json'
         self.now = datetime(2026, 4, 3, tzinfo=timezone.utc)
         self.doc = {'providers': [{'provider': 'codex', 'activity': {'price': {
@@ -30,6 +30,7 @@ class OutcomeValueTest(unittest.TestCase):
 
     def read(self):
         self.path.write_text(json.dumps(self.data))
+        self.path.chmod(0o600)
         subject.attach(self.doc, self.directory, self.now)
         return self.doc['providers'][0]['outcome_value']
 
@@ -63,3 +64,10 @@ class OutcomeValueTest(unittest.TestCase):
         self.data['events'].pop()
         self.data['events'][0]['validation_kind'] = 'review-blocked'
         self.assertEqual(self.read()['status'], 'invalid')
+
+    def test_known_zero_turns_and_private_snapshot(self):
+        self.data['activity'][0]['turns'] = 0
+        self.assertEqual(self.read()['models'][0]['usd_per_validated'], 0.0)
+        self.path.chmod(0o664)
+        subject.attach(self.doc, self.directory, self.now)
+        self.assertEqual(self.doc['providers'][0]['outcome_value']['status'], 'invalid')

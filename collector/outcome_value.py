@@ -36,10 +36,18 @@ def monthly_fraction(start, end):
 
 
 def read_snapshot(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    inbox = os.open(path.parent, os.O_DIRECTORY | os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(inbox)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError('untrusted inbox')
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=inbox)
+    finally:
+        os.close(inbox)
     with os.fdopen(fd, 'rb') as stream:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError('expected regular file')
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ValueError('expected private owner-controlled snapshot')
         raw = stream.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise ValueError('snapshot too large')
@@ -48,7 +56,7 @@ def read_snapshot(path):
 
 def project(data, providers, now):
     start, end = timestamp(data['start']), timestamp(data['end'])
-    if data['version'] != 1 or not start < end <= now or end - start > timedelta(days=31):
+    if type(data['version']) is not int or data['version'] != 1 or not start < end <= now or end - start > timedelta(days=31):
         raise ValueError('invalid interval')
     groups = {}
     for row in data['activity']:
@@ -94,7 +102,7 @@ def project(data, providers, now):
         for row in [total, *rows]:
             amount = spend
             if row is not total:
-                amount = spend * row['turns'] / turns if spend is not None and turns and row['turns'] else None
+                amount = spend * row['turns'] / turns if spend is not None and turns else None
             count = row['validated']
             row.update(usd_per_validated=amount / count if amount is not None and count else None,
                        turns_per_validated=row['turns'] / count if row['turns'] is not None and count else None,
