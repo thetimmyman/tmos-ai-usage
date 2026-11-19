@@ -368,17 +368,17 @@ class SecondReviewTest(unittest.TestCase):
         self.assertEqual(stats["totals"]["prompts"], 2)
         self.assertEqual(stats["totals"]["tokens"], 70)
 
-    def test_duplicate_exports_never_take_places_under_the_file_cap(self):
-        with tempfile.TemporaryDirectory() as tmp, patch("usage_collector.STATS_MAX_FILES", 2):
+    def test_each_conversation_counts_once_across_all_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "brain"
             for age, name in enumerate(("newest", "middle", "oldest")):
                 rows = [_prompt(0, NOW - timedelta(hours=age))]
                 stamp = NOW.timestamp() - age * 3600
                 _conversation(root, name, rows, rows, (stamp, stamp))
             stats = c.scan_antigravity_stats(NOW, root, Path(tmp) / "state")
-        self.assertEqual(stats["totals"]["sessions"], 2)
-        self.assertEqual(stats["totals"]["prompts"], 2)
-        self.assertEqual(stats["scan"]["files_scanned"], 2)
+        self.assertEqual(stats["totals"]["sessions"], 3)
+        self.assertEqual(stats["totals"]["prompts"], 3)
+        self.assertEqual(stats["scan"]["files_scanned"], 3)
 
     def test_a_change_to_the_other_export_refreshes_the_cache(self):
         stamp = NOW.timestamp()
@@ -761,7 +761,7 @@ class FourthReviewTest(unittest.TestCase):
 class FifthReviewTest(unittest.TestCase):
     def test_forks_of_an_ancestor_the_file_cap_left_out_count_its_history_once(self):
         first, second, third = (NOW - timedelta(hours=h) for h in (3, 2, 1))
-        with tempfile.TemporaryDirectory() as tmp, patch("usage_collector.STATS_MAX_FILES", 2), \
+        with tempfile.TemporaryDirectory() as tmp, \
                 patch("pi_activity.SCAN_MAX_FILES", 2, create=True):
             home = Path(tmp)
             sessions = home / ".pi/agent/sessions/--project--"
