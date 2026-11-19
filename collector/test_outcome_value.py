@@ -87,3 +87,20 @@ class OutcomeValueTest(unittest.TestCase):
         self.doc['providers'][1]['activity']['price'] = None
         self.read()
         self.assertIsNone(self.doc['outcome_models']['models'][0]['usd_per_validated'])
+
+    def test_pool_known_free_plan_with_zero_observed_turns(self):
+        price = {'source_kind': 'user', 'monthly_usd': 0}
+        activity = {'provider': 'clinepass', 'model': 'Example A', 'turns': 0}
+        self.doc['providers'].append({'provider': 'clinepass', 'activity': {'price': price}})
+        self.data['activity'].append(activity)
+
+        self.read()
+        model = self.doc['outcome_models']['models'][0]
+        self.assertEqual((model['providers'], model['usd_per_validated']), (2, 1.5))
+
+        for fee, turns in [(0, None), (90, 0)]:
+            with self.subTest(fee=fee, turns=turns):
+                price['monthly_usd'] = fee
+                activity['turns'] = turns
+                self.read()
+                self.assertIsNone(self.doc['outcome_models']['models'][0]['usd_per_validated'])
