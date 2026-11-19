@@ -84,7 +84,13 @@ Rectangle {
     }
     function outcomeRows() {
         var rows = []
-        var sources = root.selected ? [root.selected] : root.providers
+        var pooled = !root.selected && root.providers.length ? root.providers[0].outcomeModels : null
+        var sources = root.selected ? [root.selected] : pooled ? [] : root.providers
+        if (pooled && pooled.status === "observed") {
+            pooled.models.forEach(function(r) {
+                rows.push({label: r.model, value: r, end: pooled.end, start: pooled.start})
+            })
+        }
         sources.forEach(function(p) {
             var v = p.outcomeValue
             if (!v || v.status !== "observed") return

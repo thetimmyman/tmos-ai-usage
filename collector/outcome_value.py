@@ -54,6 +54,31 @@ def read_snapshot(path):
     return json.loads(raw)
 
 
+def ratios(row, amount):
+    count = row['validated']
+    row.update(allocated_usd=amount,
+               usd_per_validated=amount / count if amount is not None and count else None,
+               turns_per_validated=row['turns'] / count if row['turns'] is not None and count else None,
+               provisional=count < MIN_VALIDATED)
+
+
+def pooled_models(projections):
+    groups = {}
+    for projection in projections.values():
+        for row in projection['models']:
+            groups.setdefault(row['model'], []).append(row)
+    models = []
+    for model, entries in sorted(groups.items()):
+        turns = [r['turns'] for r in entries]
+        amounts = [r['allocated_usd'] for r in entries]
+        row = dict(model=model, providers=len(entries),
+                   turns=None if None in turns else sum(turns),
+                   sample=sum(r['sample'] for r in entries), validated=sum(r['validated'] for r in entries))
+        ratios(row, None if None in amounts else sum(amounts))
+        models.append(row)
+    return models
+
+
 def project(data, providers, now):
     start, end = timestamp(data['start']), timestamp(data['end'])
     if type(data['version']) is not int or data['version'] != 1 or not start < end <= now or end - start > timedelta(days=31):
@@ -103,10 +128,7 @@ def project(data, providers, now):
             amount = spend
             if row is not total:
                 amount = spend * row['turns'] / turns if spend is not None and turns else None
-            count = row['validated']
-            row.update(usd_per_validated=amount / count if amount is not None and count else None,
-                       turns_per_validated=row['turns'] / count if row['turns'] is not None and count else None,
-                       provisional=count < MIN_VALIDATED)
+            ratios(row, amount)
         result[provider] = dict(status='observed', start=data['start'], end=data['end'],
                                 total=total, models=rows)
     return result
@@ -122,5 +144,7 @@ def attach(document, directory, now=None):
         result, missing = {}, 'missing'
     except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, RecursionError):
         result, missing = {}, 'invalid'
+    document['outcome_models'] = (dict(status='observed', start=data['start'], end=data['end'],
+                                        models=pooled_models(result)) if result else {'status': missing})
     for provider, row in providers.items():
         row['outcome_value'] = result.get(provider, {'status': missing})

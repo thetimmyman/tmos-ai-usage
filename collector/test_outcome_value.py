@@ -71,3 +71,19 @@ class OutcomeValueTest(unittest.TestCase):
         self.path.chmod(0o664)
         subject.attach(self.doc, self.directory, self.now)
         self.assertEqual(self.doc['providers'][0]['outcome_value']['status'], 'invalid')
+
+
+    def test_pool_costs_for_the_same_model_including_zero_validation_plans(self):
+        self.doc['providers'].append({'provider': 'clinepass', 'activity': {'price': {
+            'source_kind': 'user', 'monthly_usd': 90}}})
+        self.data['activity'].append({'provider': 'clinepass', 'model': 'Example A', 'turns': 6})
+        self.data['events'].append(dict(self.event(3, 'Example A'), provider='clinepass',
+                                        outcome='pending', finished_at=None, validation_kind=None))
+        self.read()
+        a, b = self.doc['outcome_models']['models']
+        self.assertEqual((a['providers'], a['sample'], a['validated']), (2, 2, 1))
+        self.assertEqual((a['usd_per_validated'], a['turns_per_validated']), (4.5, 9))
+        self.assertEqual(b['usd_per_validated'], 0.5)
+        self.doc['providers'][1]['activity']['price'] = None
+        self.read()
+        self.assertIsNone(self.doc['outcome_models']['models'][0]['usd_per_validated'])
