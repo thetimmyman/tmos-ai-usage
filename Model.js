@@ -527,6 +527,64 @@ function tone(remainingPct, warnPct, lowPct) {
   return "ok"
 }
 
+// The X-RAY capacity comparison: one row per subscription, in the order given (the ranking), with
+// the three limit windows as separate cells. The windows are independent limits, so nothing joins
+// them. A window the reading does not carry has no fill, never an empty meter, and says why in words:
+// "not reported" when the reading has other windows (or is live), "no reading" when the provider
+// gave nothing current, so an absent reading is never stated as a fact about its limits. A live
+// reading takes the headroom tone; any other reading (stale, estimated, failed) names its status in
+// words and is never drawn in the "ok" colour, but a low one keeps its urgent or warn tone, as in
+// the Budget panel and on the bar.
+function hasWindowReading(provider) {
+  var k, w
+  for (k = 0; k < WINDOW_ORDER.length; k++) {
+    w = provider && provider.windows ? provider.windows[WINDOW_ORDER[k]] : null
+    if (w && typeof w.remainingPct === "number" && w.remainingPct >= 0) return true
+  }
+  return false
+}
+
+function capacityCell(provider, key, warnPct, lowPct) {
+  var w, known, live, t
+  w = provider && provider.windows ? provider.windows[key] : null
+  known = !!w && typeof w.remainingPct === "number" && w.remainingPct >= 0
+  live = !!provider && provider.status === "ok"
+  t = known ? tone(w.remainingPct, warnPct, lowPct) : "muted"
+  return {
+    key: key,
+    label: WINDOW_LABEL[key],
+    known: known,
+    fill: known ? clamp01(w.remainingPct / 100) : 0,
+    text: known ? percentText(w) : (live || hasWindowReading(provider) ? "not reported" : "no reading"),
+    tone: live || t !== "ok" ? t : "muted"
+  }
+}
+
+function capacityRows(providers, warnPct, lowPct) {
+  var rows, i, k, p, cells, title, statusWord, cell
+  rows = []
+  for (i = 0; i < (providers ? providers.length : 0); i++) {
+    p = providers[i]
+    cells = []
+    title = p.valueLabel ? `${p.valueLabel} · ${p.name}` : String(p.name)
+    statusWord = p.status === "ok" ? "" : String(p.statusLabel || p.status || STATUS_LABEL.unknown)
+    for (k = 0; k < WINDOW_ORDER.length; k++) {
+      cell = capacityCell(p, WINDOW_ORDER[k], warnPct, lowPct)
+      // What a screen reader says for this number alone: whose, which window, how fresh.
+      cell.speech = `${title}${statusWord ? ` (${statusWord})` : ""} ${cell.label}: ${cell.text}`
+      cells.push(cell)
+    }
+    rows.push({
+      id: p.id,
+      title: title,
+      statusWord: statusWord,
+      statusTone: p.statusTone || "muted",
+      cells: cells
+    })
+  }
+  return rows
+}
+
 // "1d 20h", "3h 05m", "4m", "now". Same shape the providers' own UIs use.
 function countdown(seconds) {
   var minutes, days, hours, mins

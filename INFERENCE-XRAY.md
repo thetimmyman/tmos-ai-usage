@@ -30,12 +30,15 @@ not be duplicated. The initial preview uses the five configured provider rows;
 account-level identity still needs collector integration.
 
 The overview starts with the ranking table, followed by separate local-activity,
-request-report, task-validation, and billing coverage columns.
-Capacity has its own overlay. When both observed turns and invoice cash exist, a
-separate chart uses independent scales and labels their observation windows; it
-does not calculate cost per turn or influence rankings. Missing samples remain
-gaps, never fabricated zeros. Historical value series and account-level pool
-identity are future scope; provider rows currently follow the configured sources.
+request-report, task-validation, and billing coverage columns. Capacity has one row per
+subscription, in ranking order: 5h, week and month are separate meters with their
+numbers, and a stale, estimated or failed reading says so in words. A window the reading
+does not carry says "not reported", and a provider that gave no current reading says "no
+reading". When both observed turns and invoice cash exist, a separate chart uses
+independent scales and labels their observation windows; it does not calculate cost per
+turn or influence rankings. Missing samples remain gaps, never fabricated zeros.
+Historical value series and account-level pool identity are future scope; provider rows
+currently follow the configured sources.
 
 ## Score and attribution
 

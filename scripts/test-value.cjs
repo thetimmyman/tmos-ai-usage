@@ -125,4 +125,61 @@ assert.equal(quotaGroup.windows[0].resetsAtMs, Date.parse('2026-10-19T16:00:00Z'
 assert.match(model.quotaGroupDetail(quotaGroup, Date.parse('2026-10-19T14:00:00Z')), /^5h: 60\.0% left · .*\(in 2h 00m\)$/);
 assert.match(model.quotaGroupDetail(quotaGroup, Date.parse('2026-10-19T15:30:00Z')), /\(in 30m\)$/);
 console.log('PASS quota-group reset countdowns follow the view clock');
+const capacityDoc = model.parseDocument(JSON.stringify({comparison_mode: 'activity', providers: [
+  {provider: 'relay', label: 'Relay Pass', status: 'unauthenticated'},
+  {provider: 'nimbus', label: 'Nimbus Assist', status: 'stale', activity: {observed_turns: 30, window_days: 30, price: {monthly_usd: 10}},
+    windows: [{name: '5h', remaining_pct: 43}, {name: 'week', remaining_pct: 78}]},
+  {provider: 'acme', label: 'Acme Code', status: 'ok', activity: {observed_turns: 90, window_days: 30, price: {monthly_usd: 10}},
+    windows: [{name: '5h', remaining_pct: 84}, {name: 'week', remaining_pct: 12}, {name: 'month', remaining_pct: 30}]},
+  {provider: 'antigravity', status: 'estimate', activity: {observed_turns: 20, window_days: 30, price: {monthly_usd: 10}},
+    windows: [{name: 'week', remaining_pct: 120}, {name: 'month', remaining_pct: -1}]},
+  {provider: 'quarry', label: 'Quarry Agent', status: 'error', windows: [{name: '5h', remaining_pct: 90}, {name: 'week', remaining_pct: 9}, {name: 'month', remaining_pct: 30}]},
+  {provider: 'orbital', label: 'Orbital CLI', status: 'unknown'},
+  {provider: 'ledger', label: 'Ledger Only', status: 'ok', balance: {remaining_usd: 4, funded_usd: 10}}
+]})).providers;
+const capacity = model.capacityRows(capacityDoc, 35, 15);
+const plain = (v) => JSON.parse(JSON.stringify(v));
+assert.deepEqual(Array.from(capacity, r => r.id), Array.from(capacityDoc, p => p.id));
+assert.deepEqual(Array.from(capacity, r => r.title), Array.from(capacityDoc, p => `${p.valueLabel} · ${p.name}`));
+assert.equal(capacity.find(r => r.id === 'antigravity').title, `${capacityDoc.find(p => p.id === 'antigravity').valueLabel} · Google AI / Antigravity`);
+const capRow = (id) => plain(capacity.find(r => r.id === id));
+assert.deepEqual(Array.from(capacity, r => r.statusWord), Array.from(capacityDoc, p => p.status === 'ok' ? '' : p.statusLabel));
+assert.equal(capRow('nimbus').statusWord, 'stale');
+assert.equal(capRow('antigravity').statusWord, 'estimate');
+assert.equal(capRow('relay').statusWord, 'sign in');
+assert.equal(capRow('quarry').statusWord, 'error');
+assert.equal(capRow('acme').statusWord, '');
+for (const r of capacity) assert.deepEqual(plain(r.cells).map(c => [c.key, c.label]), [['5h', '5h'], ['week', 'Week'], ['month', 'Month']]);
+const cellsOf = (id, field) => capRow(id).cells.map(c => c[field]);
+assert.deepEqual(cellsOf('acme', 'text'), ['84%', '12%', '30%']);
+assert.deepEqual(cellsOf('acme', 'fill'), [0.84, 0.12, 0.3]);
+assert.deepEqual(cellsOf('acme', 'tone'), ['ok', 'urgent', 'warn']);
+assert.deepEqual(plain(model.capacityRows(capacityDoc, 90, 15).find(r => r.id === 'acme').cells).map(c => c.tone), ['warn', 'urgent', 'warn']);
+// A reading that is not live never takes the "ok" colour, but a low one keeps its urgent or warn tone:
+// the Budget panel and the bar do not hide a stale or failed reading that is nearly used up either.
+assert.deepEqual(cellsOf('nimbus', 'text'), ['43%', '78%', 'not reported']);
+assert.deepEqual(cellsOf('nimbus', 'tone'), ['muted', 'muted', 'muted']);
+assert.deepEqual(cellsOf('nimbus', 'fill'), [0.43, 0.78, 0]);
+assert.deepEqual(cellsOf('nimbus', 'known'), [true, true, false]);
+assert.deepEqual(cellsOf('antigravity', 'text'), ['not reported', '120%', 'not reported']);
+assert.deepEqual(cellsOf('antigravity', 'fill'), [0, 1, 0]);
+assert.deepEqual(cellsOf('antigravity', 'tone'), ['muted', 'muted', 'muted']);
+assert.deepEqual(cellsOf('quarry', 'text'), ['90%', '9%', '30%']);
+assert.deepEqual(cellsOf('quarry', 'tone'), ['muted', 'urgent', 'warn']);
+// No current reading at all is "no reading", not a claim about the provider's limits; a live reading
+// that lacks a window says "not reported".
+assert.deepEqual(cellsOf('relay', 'text'), ['no reading', 'no reading', 'no reading']);
+assert.deepEqual(cellsOf('relay', 'fill'), [0, 0, 0]);
+assert.deepEqual(cellsOf('relay', 'tone'), ['muted', 'muted', 'muted']);
+assert.deepEqual(cellsOf('orbital', 'text'), ['no reading', 'no reading', 'no reading']);
+assert.deepEqual(cellsOf('ledger', 'text'), ['not reported', 'not reported', 'not reported']);
+// The row's cells carry the status word and window for a screen reader, which reads each number alone.
+assert.deepEqual(Array.from(capRow('nimbus').cells, c => c.speech), ['Nimbus Assist (stale) 5h: 43%', 'Nimbus Assist (stale) Week: 78%', 'Nimbus Assist (stale) Month: not reported'].map(t => t.replace('Nimbus Assist', capRow('nimbus').title)));
+assert.equal(capRow('acme').cells[1].speech, `${capRow('acme').title} Week: 12%`);
+assert.deepEqual(plain(model.capacityRows([], 35, 15)), []);
+// Panel is a PanelWindow and cannot render without a layer-shell backend, so its hand-over of the
+// headroom thresholds to the view is guarded at the source.
+const panelSource = fs.readFileSync(path.join(__dirname, '..', 'Panel.qml'), 'utf8');
+assert.match(panelSource, /XrayView\s*\{[^}]*warnHeadroomPct:\s*root\.warnHeadroomPct[^}]*lowHeadroomPct:\s*root\.lowHeadroomPct/);
+console.log('PASS capacity rows: ranking order, full names, status words, not-reported and no-reading cells, clamped fills, tones');
 

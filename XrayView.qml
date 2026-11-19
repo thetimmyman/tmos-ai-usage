@@ -12,6 +12,20 @@ Rectangle {
     property var providers: []
     property string selectedId: ""
     property double nowMs: Date.now()
+    // Headroom thresholds: the Budget panel passes its own, so both views colour a window alike. A reading that
+    // is not live is never drawn in the "ok" colour here (its status word says why), but keeps a low tone.
+    property int warnHeadroomPct: 35
+    property int lowHeadroomPct: 15
+    readonly property var capacityRows: Model.capacityRows(root.providers, root.warnHeadroomPct, root.lowHeadroomPct)
+    // The Budget panel's tone tokens: "warn" borrows accent, "muted" is this view's secondary text.
+    function toneColor(tone) {
+        if (tone === "urgent") return Commons.Color.urgent
+        if (tone === "warn") return Commons.Color.accent
+        if (tone === "muted") return root.secondary
+        return Commons.Color.foreground
+    }
+    // Every capacity number gets the width of "100%", so the meters in a column share one length.
+    TextMetrics { id: percentMetrics; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; text: "100%" }
     Timer { interval: 30000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
     signal backRequested()
     signal setupRequested()
@@ -71,7 +85,6 @@ Rectangle {
         return 'Observed ' + o.observed_at;
     }
     function value(p) { return p.valueScore === null || p.valueScore === undefined ? "—" : metric(p.valueScore) }
-    function series(p) { return ['5h', 'week', 'month'].map(k => p.windows[k] ? p.windows[k].remainingPct : -1) }
     function cashText(n) { return n === null || n === undefined ? 'unknown' : '$' + Number(n).toFixed(2) }
     function importStatus(value, label) {
         var parts = []
@@ -323,64 +336,112 @@ Rectangle {
                     text: "OpenCode JSON/Console CSV exports: copy into ~/.local/state/tmos-ai-usage/imports/ and refresh (with --state-dir, use that directory's imports/). For billing, run collector/billing_ledger.py --invoice <record.json> --evidence <private-receipt>; keep source material local. For outcome capture, use collector/task_runner.py run/verify/accept or put event JSONL in outcome-events/. Rejected and waiting counts above identify import problems without showing filenames or paths."
                 }
             }
+            // Capacity: one row per subscription, in ranking order, named in full on its own row. The
+            // three windows are independent limits, so each is its own meter and number, never a line.
             Column {
+                id: capacitySection
                 visible: !root.selected
                 width: parent.width
-                spacing: Style.space(8)
-                Label { text: "CAPACITY OVERLAY · % REMAINING"; color: Commons.Color.accent; font.bold: true }
-                Canvas {
-                    id: overlay
+                spacing: Style.space(6)
+                readonly property real gap: Style.space(8)
+                // The name column lines up with SUBSCRIPTION in the ranking table above.
+                readonly property real nameWidth: width * 0.35
+                readonly property real cellWidth: (width - nameWidth - 3 * gap) / 3
+                Label { text: "CAPACITY · % REMAINING"; color: Commons.Color.accent; font.bold: true }
+                Row {
                     width: parent.width
-                    height: Style.space(180)
-                    property var rows: root.providers
-                    property color ink: Commons.Color.foreground
-                    property color accent: Commons.Color.accent
-                    property color muted: root.secondary
-                    onRowsChanged: requestPaint()
-                    onInkChanged: requestPaint()
-                    onAccentChanged: requestPaint()
-                    onMutedChanged: requestPaint()
-                    onWidthChanged: requestPaint()
-                    onPaint: {
-                        var ctx = getContext('2d'); ctx.reset();
-                        var left = 38, right = width - 45, top = 20, bottom = height - 30;
-                        ctx.font = String(Style.font.caption) + 'px ' + Style.font.family;
-                        ctx.strokeStyle = muted; ctx.fillStyle = ink;
-                        for (var v = 0; v <= 100; v += 50) {
-                            var y = bottom - v / 100 * (bottom - top);
-                            ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.moveTo(left,y); ctx.lineTo(right,y); ctx.stroke();
-                            ctx.globalAlpha = 1; ctx.fillText(String(v), 0, y + 4);
+                    spacing: capacitySection.gap
+                    Label { width: capacitySection.nameWidth; text: "SUBSCRIPTION"; color: root.secondary; font.pixelSize: Style.font.caption }
+                    Repeater {
+                        model: Model.WINDOW_ORDER
+                        Label {
+                            required property string modelData
+                            objectName: "capacityHeader-" + modelData
+                            width: capacitySection.cellWidth
+                            text: Model.WINDOW_LABEL[modelData]
+                            color: root.secondary
+                            font.pixelSize: Style.font.caption
                         }
-                        ['5h','Week','Month'].forEach(function(k,i) { ctx.fillText(k,left+i*(right-left)/2-8,height-6) });
-                        rows.forEach(function(p,index) {
-                            ctx.strokeStyle = index % 2 ? ink : accent;
-                            ctx.fillStyle = ctx.strokeStyle;
-                            ctx.globalAlpha = 1 - (index % 4)*0.16;
-                            ctx.setLineDash(index < 2 ? [] : [3+index*2,4]);
-                            ctx.beginPath(); var active = false;
-                            root.series(p).forEach(function(n,i) {
-                                if (n < 0) { active = false; return; }
-                                var x=left+i*(right-left)/2, y=bottom-Math.max(0,Math.min(100,n))/100*(bottom-top);
-                                if (active) ctx.lineTo(x,y); else ctx.moveTo(x,y);
-                                active=true;
-                            }); ctx.stroke(); ctx.setLineDash([]);
-                            root.series(p).forEach(function(n,i) { if(n>=0) {ctx.beginPath();ctx.arc(left+i*(right-left)/2,bottom-Math.max(0,Math.min(100,n))/100*(bottom-top),3,0,Math.PI*2);ctx.fill()} });
-                        }); ctx.globalAlpha = 1;
                     }
                 }
                 Repeater {
-                    model: root.providers
-                    Row {
+                    model: root.capacityRows
+                    Column {
+                        id: capacityRow
                         required property var modelData
-                        required property int index
+                        objectName: "capacityRow-" + modelData.id
                         width: parent.width
-                        spacing: Style.space(10)
-                        Rectangle { width: Style.space(22); height: 3; anchors.verticalCenter: parent.verticalCenter; color: index % 2 ? Commons.Color.foreground : Commons.Color.accent; opacity: 1-(index%4)*0.16 }
-                        Label { width: parent.width * 0.4; text: modelData.valueLabel + " · " + modelData.name }
-                        Label { text: root.series(modelData).map(n => n < 0 ? '—' : Math.round(n)+'%').join('  /  '); color: root.secondary }
+                        spacing: Style.space(6)
+                        Row {
+                            width: parent.width
+                            spacing: capacitySection.gap
+                            // The status word follows the name, or starts the next line when the
+                            // name fills the column.
+                            Flow {
+                                width: capacitySection.nameWidth
+                                spacing: Style.space(6)
+                                Label {
+                                    objectName: "capacityName-" + capacityRow.modelData.id
+                                    width: Math.min(implicitWidth, parent.width)
+                                    text: capacityRow.modelData.title
+                                }
+                                Label {
+                                    objectName: "capacityStatus-" + capacityRow.modelData.id
+                                    visible: text !== ""
+                                    text: capacityRow.modelData.statusWord
+                                    color: root.toneColor(capacityRow.modelData.statusTone)
+                                }
+                            }
+                            Repeater {
+                                model: capacityRow.modelData.cells
+                                Item {
+                                    id: capacityCell
+                                    required property var modelData
+                                    readonly property string cellId: capacityRow.modelData.id + "-" + modelData.key
+                                    readonly property string tone: modelData.tone
+                                    objectName: "capacityCell-" + cellId
+                                    width: capacitySection.cellWidth
+                                    height: capacityText.implicitHeight
+                                    Rectangle {
+                                        objectName: "capacityTrack-" + capacityCell.cellId
+                                        anchors.left: parent.left
+                                        anchors.right: capacityText.left
+                                        anchors.rightMargin: Style.space(8)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        height: Style.space(6)
+                                        radius: height / 2
+                                        color: Qt.alpha(Commons.Color.muted, 0.2)
+                                        visible: capacityCell.modelData.known
+                                        Rectangle {
+                                            objectName: "capacityFill-" + capacityCell.cellId
+                                            width: parent.width * capacityCell.modelData.fill
+                                            height: parent.height
+                                            radius: parent.radius
+                                            color: root.toneColor(capacityCell.tone)
+                                        }
+                                    }
+                                    Label {
+                                        id: capacityText
+                                        objectName: "capacityText-" + capacityCell.cellId
+                                        anchors.right: parent.right
+                                        width: capacityCell.modelData.known ? Math.ceil(percentMetrics.advanceWidth) : parent.width
+                                        horizontalAlignment: Text.AlignRight
+                                        text: capacityCell.modelData.text
+                                        color: root.toneColor(capacityCell.tone)
+                                        Accessible.name: capacityCell.modelData.speech
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { width: parent.width; height: 1; color: Qt.alpha(Commons.Color.muted, 0.25) }
                     }
                 }
-                Label { width: parent.width; color: root.secondary; text: "5h / week / month headroom; missing limits have gaps. Each subscription has its own reset schedule. Capacity is separate from task value." }
+                Label {
+                    objectName: "capacityFootnote"
+                    width: parent.width
+                    color: root.secondary
+                    text: "Each window is a separate limit with its own reset; a row is not a trend. “not reported”: this reading has no such window. “no reading”: the provider gave no current reading. Capacity is separate from task value."
+                }
             }
             Column {
                 visible: !root.selected && root.hasComparableActivityAndCash(root.providers)

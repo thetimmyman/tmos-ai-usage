@@ -199,6 +199,8 @@ Ui.Panel {
                 anchors.fill: parent
                 visible: root.xray && !root.setupOpen
                 providers: root.providers
+                warnHeadroomPct: root.warnHeadroomPct
+                lowHeadroomPct: root.lowHeadroomPct
                 onBackRequested: root.xray = false
                 onSetupRequested: root.openSetup()
                 priceStatus: root.hostWidget ? root.hostWidget.usageSource.priceStatus : ""

@@ -19,6 +19,7 @@
 - Cache signatures compare modification times to the nanosecond, so an Antigravity export or OpenCode WAL rewritten at the same size within one second is read again.
 - Say when a relative Pi session directory (`PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` or `sessionDir`) keeps Pi sessions out of the counts. Pi resolves it from each session's folder, which the collector cannot know; the default directory is still read.
 - Model-group reset countdowns follow the panel's clock instead of freezing at the time the usage document was read.
+- Show X-RAY capacity as one row per subscription instead of a line chart whose legend could not tell five series apart and whose lines joined independent limit windows. Each row names the subscription in full, gives 5h, week and month their own meter and number ("not reported" for a window the reading lacks, "no reading" when the provider gave nothing current), and says in words when the reading is stale, estimated or failed. Live meters use the Budget panel's warning thresholds; a reading that is not live is never drawn in the "ok" colour but keeps a low tone.
 
 - Hold the whole-body read deadline during a blocking receive: each read gets only what is left of it, so a server that sends a byte and stalls can no longer stretch an 8 s read toward 16 s.
 - Keep a Claude quota reading **stale** after a failed refresh, including while the call interval throttles the next attempt; only a successful read marks it current again.
