@@ -280,3 +280,34 @@ Personal subscription billing APIs may not expose full history, and inference
 logs cannot prove semantic correctness. These are visible data-availability limits,
 not values to fill with guessed zeroes. Rankings are meaningful only for comparable
 workload cohorts and coverage; logged turns are utilization, not model quality.
+
+## Observed cost per validated outcome
+
+In Inference X-RAY, open Overview for model rows ordered by estimated dollars per
+validation. Select a provider for its total and models. Each row shows the number
+validated, the number of observed tasks and turns per validation. Fewer than five
+validations carry a provisional label. The displayed interval is the producer’s
+observation window. A saved fee is prorated over the UTC calendar months it
+overlaps, then split among that provider’s models by their observed turns.
+This assigns the whole interval fee to the observed workload, including idle
+time. Other workloads or missing activity can change the estimate. Published
+price estimates do not qualify. Missing model turn coverage suppresses model
+dollar allocations. A zero validation count has no finite ratio.
+
+A trusted producer can atomically replace a private mode-0600 JSON snapshot at
+`outcome-events/model-outcomes.json` in the state directory. Use version 1,
+offset-aware `start` and `end` (at most 31 days apart), and two arrays:
+
+- `activity` has one row per provider/model with `provider`, `model` and
+  `turns` (observed user turns in the interval, or null for missing coverage).
+- `events` has one row per distinct task, with a stable opaque 64-hex `task_id`,
+  `provider`, `model`, `started_at`, `finished_at`, `outcome` and
+  `validation_kind`. A validated task requires `merged-and-reviewed`,
+  `verified-close` or `audit-upheld`. A rejected task requires `review-blocked`
+  or `audit-reopened`. Pending and abandoned tasks have a null validation kind.
+  Pending tasks have a null finish. Other finishes must fall in the window.
+
+Corrections replace prior outcomes in the next snapshot. Each task has one
+attribution. Export only trustworthy attestations and aggregate turn counts,
+keeping raw evidence with its producer. This observation path is independent
+of complete-population receipts for the validated-tasks-per-dollar ranking.
