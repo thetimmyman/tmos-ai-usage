@@ -176,6 +176,8 @@ def attach_local(document, directory, refresh_offers=False, refresh_console=Fals
     billing_ledger.attach(document, directory)
     import subscription_value
     subscription_value.attach(document, directory)
+    import outcome_value
+    outcome_value.attach(document, directory)
 
 
 def verify_leaf(directory, digest):

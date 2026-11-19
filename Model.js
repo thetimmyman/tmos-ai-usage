@@ -103,6 +103,7 @@ function normalizeProvider(rawRow, observedAtMs, reportImport, outcomeImport) {
     economics: row.economics || null,
     economicsReason: String(row.economics_reason || "Validated task and spend evidence unavailable."),
     activity: row.activity || {},
+    outcomeValue: row.outcome_value || {},
     report: row.report || {},
     outcomes: normalizeOutcomes(row.outcomes),
     billing: normalizeBilling(row.billing),

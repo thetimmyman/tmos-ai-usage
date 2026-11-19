@@ -82,6 +82,26 @@ Rectangle {
         if (value.pendingCount !== null && value.pendingCount > 0) parts.push(root.metric(value.pendingCount) + ' waiting')
         return label + ' import: ' + (parts.length ? parts.join(' · ') : 'no files queued')
     }
+    function outcomeRows() {
+        var rows = []
+        var sources = root.selected ? [root.selected] : root.providers
+        sources.forEach(function(p) {
+            var v = p.outcomeValue
+            if (!v || v.status !== "observed") return
+            var values = root.selected ? [v.total].concat(v.models) : v.models
+            values.forEach(function(r) {
+                rows.push({label: r.model ? r.model + " · " + p.name : p.name + " total", value: r, end: v.end, start: v.start})
+            })
+        })
+        return rows.sort(function(a, b) {
+            if (!a.value.model || !b.value.model) return a.value.model ? 1 : -1
+            var x = a.value.usd_per_validated, y = b.value.usd_per_validated
+            if (x !== y) return x === null ? 1 : y === null ? -1 : x - y
+            x = a.value.turns_per_validated; y = b.value.turns_per_validated
+            return x === y ? a.label.localeCompare(b.label) : x === null ? 1 : y === null ? -1 : x - y
+        })
+    }
+    readonly property var modelRows: outcomeRows()
     function localCoverageText(p) {
         var a = p && p.activity ? p.activity : {}
         if (!(p && p.stats && p.stats.available) && !(typeof a.observed_turns === 'number' && a.observed_turns > 0))
@@ -213,6 +233,31 @@ Rectangle {
                 }
             }
             Label { visible: !root.selected; width: parent.width; color: root.secondary; text: root.activityMode ? "Fees use saved prices or invoice amounts; annual plans are shown per month. Open a subscription for its source." : "Only comparable tasks and spend receive a validated rank." }
+            Column {
+                width: parent.width
+                spacing: Style.space(6)
+                Label { text: "VALIDATED OUTCOMES"; color: Commons.Color.accent; font.bold: true }
+                Label {
+                    width: parent.width; color: root.secondary
+                    text: root.modelRows.length
+                        ? root.modelRows[0].start + " to " + root.modelRows[0].end
+                          + " · Observed sample. The estimated plan fee for this interval is split by observed turns. Fewer than five validations are provisional."
+                        : (root.providers.some(p => p.outcomeValue && p.outcomeValue.status === "invalid")
+                           ? "Outcome export could not be read." : "No model outcome sample available.")
+                }
+                Repeater {
+                    model: root.modelRows
+                    Row {
+                        required property var modelData
+                        width: parent.width; spacing: Style.space(8)
+                        readonly property real cell: (width - 3 * spacing) / 6
+                        Label { width: 2 * parent.cell; text: modelData.label; font.bold: true }
+                        Label { width: 1.5 * parent.cell; text: modelData.value.validated + " / " + modelData.value.sample + " validated" + (modelData.value.provisional ? " · provisional" : "") }
+                        Label { width: 1.25 * parent.cell; text: root.metric(modelData.value.turns_per_validated) + " turns / validated" }
+                        Label { objectName: "outcomeCost-" + modelData.label; width: 1.25 * parent.cell; text: modelData.value.usd_per_validated === null ? "Cost unknown" : root.cashText(modelData.value.usd_per_validated) + " / validated" }
+                    }
+                }
+            }
             Column {
                 visible: !root.selected
                 width: parent.width
