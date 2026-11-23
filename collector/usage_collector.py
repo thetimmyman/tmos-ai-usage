@@ -613,11 +613,15 @@ def parse_command_code(
 
 
 def parse_claude_code(
-    payload: object, plan: str | None = None, now: datetime | None = None
+    payload: object,
+    plan: str | None = None,
+    now: datetime | None = None,
+    *,
+    provider: str = "claude-code",
 ) -> dict:
     """/api/oauth/usage -> {five_hour|seven_day: {utilization, resets_at}}."""
     if not isinstance(payload, dict):
-        return unknown("claude-code", "usage endpoint returned no object")
+        return unknown(provider, "usage endpoint returned no object")
     rows = []
     for key, name in (("five_hour", "5h"), ("seven_day", "week")):
         win = payload.get(key)
@@ -629,9 +633,9 @@ def parse_claude_code(
         rows.append(window(name, utilization, _parse_iso(win.get("resets_at")), now))
     if not rows:
         return unknown(
-            "claude-code", "no five_hour/seven_day utilization in the response"
+            provider, "no five_hour/seven_day utilization in the response"
         )
-    return record("claude-code", status="ok", plan=plan, windows=rows, observed_at=now)
+    return record(provider, status="ok", plan=plan, windows=rows, observed_at=now)
 
 
 def parse_codex(payload: object, now: datetime | None = None) -> dict:
@@ -677,7 +681,9 @@ def parse_codex(payload: object, now: datetime | None = None) -> dict:
 # Claude Code local fallback: token counts from the CLI's own transcripts. An estimate of
 # *activity*, never of the account's real limit, so it is reported as status="estimate" with
 # no percentage claim it cannot back.
-def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
+def parse_claude_local(
+    entries: list, now: datetime | None = None, *, provider: str = "claude-code"
+) -> dict:
     """entries: [{"timestamp": iso, "tokens": int}] within the current 5h window."""
     now = now or _now()
     start = now - timedelta(hours=5)
@@ -688,7 +694,7 @@ def parse_claude_local(entries: list, now: datetime | None = None) -> dict:
         if when is not None and tokens is not None and when >= start:
             total += _int(tokens)
     return record(
-        "claude-code",
+        provider,
         status="estimate",
         source="local",
         plan=None,
@@ -1541,6 +1547,8 @@ def scan_claude_stats(
     now: datetime | None = None,
     root: Path | str | None = None,
     state_dir: Path | None = None,
+    *,
+    provider: str = "claude-code",
 ) -> dict:
     """Read the default projects tree plus CLAUDE_CONFIG_DIR/projects and extra project trees.
 
@@ -1568,9 +1576,22 @@ def scan_claude_stats(
             if key not in sessions or part["mtime"] > sessions[key]["mtime"]:
                 sessions[key] = part
     stats = _absorb(list(sessions.values()), now)
-    stats.source = "~/.claude/projects" if len(roots) == 1 else "Claude Code project directories"
+    if root is not None:
+        home = str(Path.home())
+        rendered = str(Path(root))
+        stats.source = (
+            "~" + rendered[len(home) :]
+            if rendered.startswith(home + "/")
+            else rendered
+        )
+    else:
+        stats.source = (
+            "~/.claude/projects"
+            if len(roots) == 1
+            else "Claude Code project directories"
+        )
     stats.scan = scan
-    return stats.finish(now, "claude-code", state_dir)
+    return stats.finish(now, provider, state_dir)
 
 
 def scan_codex_stats(
@@ -3216,9 +3237,11 @@ def collect_command_code() -> dict:
     return out
 
 
-def _claude_local_entries(now: datetime) -> list:
+def _claude_local_entries(
+    now: datetime, projects_root: Path | None = None
+) -> list:
     """Token counts from ~/.claude/projects/*/*.jsonl for the last 5h. Read-only, bounded."""
-    root = Path(os.path.expanduser("~/.claude/projects"))
+    root = projects_root or Path(os.path.expanduser("~/.claude/projects"))
     cutoff = (now - timedelta(hours=5)).timestamp()
     entries: list = []
     if not root.is_dir():
@@ -3266,18 +3289,29 @@ CLAUDE_MAX_BACKOFF_S = 6 * 3600
 _CLAUDE_TIERS = ("default_claude_max_20x", "default_claude_max_5x")
 
 
-def _claude_gate_path(state_dir: Path | None = None) -> Path:
-    return (state_dir or STATE_DIR) / "claude-usage-gate.json"
+def _claude_gate_path(
+    state_dir: Path | None = None, provider: str = "claude-code"
+) -> Path:
+    filename = (
+        "claude-usage-gate.json"
+        if provider == "claude-code"
+        else f"{provider}-usage-gate.json"
+    )
+    return (state_dir or STATE_DIR) / filename
 
 
-def _load_claude_gate(state_dir: Path | None = None) -> dict:
-    raw = read_json(_claude_gate_path(state_dir))
+def _load_claude_gate(
+    state_dir: Path | None = None, provider: str = "claude-code"
+) -> dict:
+    raw = read_json(_claude_gate_path(state_dir, provider))
     return raw if isinstance(raw, dict) else {}
 
 
-def _save_claude_gate(gate: dict, state_dir: Path | None = None) -> None:
+def _save_claude_gate(
+    gate: dict, state_dir: Path | None = None, provider: str = "claude-code"
+) -> None:
     try:
-        path = _claude_gate_path(state_dir)
+        path = _claude_gate_path(state_dir, provider)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(gate) + "\n")
@@ -3320,7 +3354,9 @@ def _claude_account_id(config_path: Path) -> str | None:
     return _token_fingerprint(uuid) if isinstance(uuid, str) and uuid else None
 
 
-def _claude_stale_reading(gate: dict, reason: str, now: datetime) -> dict | None:
+def _claude_stale_reading(
+    gate: dict, reason: str, now: datetime, *, provider: str = "claude-code"
+) -> dict | None:
     """The last good meter, minus any window that has reset since — its old figure would lie."""
     last = gate.get("last_ok")
     if not isinstance(last, dict):
@@ -3339,7 +3375,7 @@ def _claude_stale_reading(gate: dict, reason: str, now: datetime) -> dict | None
         return None
     age_min = max(0, _int((now - observed).total_seconds() // 60))
     out = record(
-        "claude-code",
+        provider,
         status="stale",
         plan=last.get("plan"),
         windows=rows,
@@ -3350,10 +3386,22 @@ def _claude_stale_reading(gate: dict, reason: str, now: datetime) -> dict | None
     return out
 
 
-def _claude_fallback(gate: dict, reason: str, plan: str | None, now: datetime) -> dict:
-    out = _claude_stale_reading(gate, reason, now)
+def _claude_fallback(
+    gate: dict,
+    reason: str,
+    plan: str | None,
+    now: datetime,
+    *,
+    provider: str = "claude-code",
+    projects_root: Path | None = None,
+) -> dict:
+    out = _claude_stale_reading(gate, reason, now, provider=provider)
     if out is None:
-        out = parse_claude_local(_claude_local_entries(now), now)
+        out = parse_claude_local(
+            _claude_local_entries(now, projects_root=projects_root),
+            now,
+            provider=provider,
+        )
         activity = out["note"].removeprefix("usage endpoint unreachable; ")
         out["note"] = _scrub(f"{reason}; {activity}")
     out["plan"] = out.get("plan") or plan
@@ -3367,30 +3415,36 @@ def collect_claude_code(
     creds_path: Path | None = None,
     claude_config_path: Path | None = None,
     fetch=None,
+    provider: str = "claude-code",
+    projects_root: Path | None = None,
+    label: str | None = None,
 ) -> dict:
     now = now or _now()
     fetch = fetch or http_json
-    creds = read_json(
-        creds_path or Path(os.path.expanduser("~/.claude/.credentials.json"))
-    )
+    resolved_creds = creds_path or Path(os.path.expanduser("~/.claude/.credentials.json"))
+    creds = read_json(resolved_creds)
     oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
     token = oauth.get("accessToken") if isinstance(oauth, dict) else None
     plan = oauth.get("subscriptionType") if isinstance(oauth, dict) else None
     if not token:
-        return unknown(
-            "claude-code",
-            "no OAuth credentials in ~/.claude/.credentials.json; "
-            "run `claude` and sign in",
+        out = unknown(
+            provider,
+            f"no OAuth credentials in {resolved_creds}; run `claude` and sign in",
             status="unauthenticated",
         )
+        if label:
+            out["label"] = label
+        return out
     tier = oauth.get("rateLimitTier")
     tier = tier if tier in _CLAUDE_TIERS else None
 
     def finish(out: dict) -> dict:
         out["plan_tier"] = tier
+        if label:
+            out["label"] = label
         return out
 
-    gate = _load_claude_gate(state_dir)
+    gate = _load_claude_gate(state_dir, provider)
     fingerprint = _token_fingerprint(token)
     # Readings and backoff belong to one account. A different account's cached meter or penalty
     # must not be served for this one, so a changed identity starts the gate over.
@@ -3418,6 +3472,8 @@ def collect_claude_code(
                 f"Claude Code token expired {_iso(expires_at)}; run `claude` once to refresh it",
                 plan,
                 now,
+                provider=provider,
+                projects_root=projects_root,
             )
         )
     if gate.get("rejected_token") == fingerprint:
@@ -3427,6 +3483,8 @@ def collect_claude_code(
                 "Claude Code token was rejected; run `claude` and sign in again",
                 plan,
                 now,
+                provider=provider,
+                projects_root=projects_root,
             )
         )
     not_before = _parse_iso(gate.get("not_before"))
@@ -3437,6 +3495,8 @@ def collect_claude_code(
                 f"usage endpoint rate-limited until {_iso(not_before)}",
                 plan,
                 now,
+                provider=provider,
+                projects_root=projects_root,
             )
         )
     last_call = _parse_iso(gate.get("last_call_at"))
@@ -3446,8 +3506,19 @@ def collect_claude_code(
     ):
         # Throttled: no call. After a failed call the old meter is still stale, never current.
         if gate.get("last_failed"):
-            return finish(_claude_fallback(gate, str(gate["last_failed"]), plan, now))
-        cached = _claude_stale_reading(gate, "reused within the call interval", now)
+            return finish(
+                _claude_fallback(
+                    gate,
+                    str(gate["last_failed"]),
+                    plan,
+                    now,
+                    provider=provider,
+                    projects_root=projects_root,
+                )
+            )
+        cached = _claude_stale_reading(
+            gate, "reused within the call interval", now, provider=provider
+        )
         if cached is not None:
             cached["status"] = "ok"
             cached["note"] = ""
@@ -3473,16 +3544,34 @@ def collect_claude_code(
         else:
             reason = f"usage endpoint returned HTTP {exc.code}"
         gate["last_failed"] = reason
-        _save_claude_gate(gate, state_dir)
-        return finish(_claude_fallback(gate, reason, plan, now))
+        _save_claude_gate(gate, state_dir, provider)
+        return finish(
+            _claude_fallback(
+                gate,
+                reason,
+                plan,
+                now,
+                provider=provider,
+                projects_root=projects_root,
+            )
+        )
     except (
         Exception
     ) as exc:  # unreachable/garbled -> last reading or local estimate, never a crash
         reason = f"usage endpoint unreachable ({type(exc).__name__})"
         gate["last_failed"] = reason
-        _save_claude_gate(gate, state_dir)
-        return finish(_claude_fallback(gate, reason, plan, now))
-    out = parse_claude_code(payload, plan=plan, now=now)
+        _save_claude_gate(gate, state_dir, provider)
+        return finish(
+            _claude_fallback(
+                gate,
+                reason,
+                plan,
+                now,
+                provider=provider,
+                projects_root=projects_root,
+            )
+        )
+    out = parse_claude_code(payload, plan=plan, now=now, provider=provider)
     gate.pop("not_before", None)
     gate.pop("rejected_token", None)
     gate.pop("last_failed", None)
@@ -3500,7 +3589,7 @@ def collect_claude_code(
                 for w in out["windows"]
             ],
         }
-    _save_claude_gate(gate, state_dir)
+    _save_claude_gate(gate, state_dir, provider)
     return finish(out)
 
 
@@ -3564,6 +3653,123 @@ COLLECTORS = {
     "opencode-go": collect_opencode,
     "antigravity": collect_antigravity,
 }
+
+_ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+
+
+def _extra_accounts_path() -> Path | None:
+    override = os.environ.get("TMOS_USAGE_ACCOUNTS_FILE")
+    if override is not None:
+        stripped = override.strip()
+        return Path(os.path.expanduser(stripped)) if stripped else None
+    return Path(os.path.expanduser("~/.config/tmos-ai-usage/accounts.json"))
+
+
+def load_extra_accounts(path: Path | None = None) -> list[dict]:
+    """Load optional secondary accounts (claude-code / antigravity) from accounts.json."""
+    target = path if path is not None else _extra_accounts_path()
+    if target is None or not target.is_file():
+        return []
+    raw = read_json(target)
+    entries = raw.get("accounts") if isinstance(raw, dict) else None
+    if not isinstance(entries, list):
+        return []
+    seen = set(COLLECTORS)
+    valid: list[dict] = []
+    for item in entries[:32]:
+        if not isinstance(item, dict):
+            continue
+        acct_id = item.get("id")
+        acct_type = item.get("type")
+        name = item.get("name")
+        if (
+            not isinstance(acct_id, str)
+            or not _ACCOUNT_ID_RE.fullmatch(acct_id)
+            or acct_id in seen
+            or acct_type not in ("claude-code", "antigravity")
+            or not isinstance(name, str)
+            or not name.strip()
+        ):
+            continue
+        spec: dict = {
+            "id": acct_id,
+            "type": acct_type,
+            "name": _scrub(name.strip()),
+        }
+        if acct_type == "claude-code":
+            cfg = item.get("config_dir")
+            if not isinstance(cfg, str) or not cfg.strip():
+                continue
+            spec["config_dir"] = Path(os.path.expanduser(cfg.strip()))
+        else:
+            binary = item.get("binary")
+            if not isinstance(binary, str) or not binary.strip():
+                continue
+            spec["binary"] = os.path.expanduser(binary.strip())
+            brain = item.get("brain_dir")
+            if isinstance(brain, str) and brain.strip():
+                spec["brain_dir"] = Path(os.path.expanduser(brain.strip()))
+        seen.add(acct_id)
+        valid.append(spec)
+    return valid
+
+
+def _collect_extra_account(
+    spec: dict, now: datetime, *, local_stats: bool = True
+) -> dict:
+    import agy_usage
+
+    acct_id = spec["id"]
+    acct_type = spec["type"]
+    label = spec["name"]
+    started = time.monotonic()
+    try:
+        if acct_type == "claude-code":
+            cfg_dir: Path = spec["config_dir"]
+            row = collect_claude_code(
+                now,
+                creds_path=cfg_dir / ".credentials.json",
+                claude_config_path=cfg_dir / ".claude.json",
+                provider=acct_id,
+                projects_root=cfg_dir / "projects",
+                label=label,
+            )
+        else:
+            row = agy_usage.collect(
+                sys.modules[__name__],
+                provider=acct_id,
+                binary=spec["binary"],
+                log_name=f"agy-{acct_id}.log",
+                label=label,
+            )
+    except urllib.error.HTTPError as exc:
+        row = unknown(acct_id, f"HTTP {exc.code} from the usage endpoint")
+        row["label"] = label
+    except urllib.error.URLError as exc:
+        row = unknown(acct_id, f"network unreachable ({type(exc.reason).__name__})")
+        row["label"] = label
+    except Exception as exc:
+        row = unknown(acct_id, f"{type(exc).__name__}: {exc}", status="error")
+        row["label"] = label
+    row["elapsed_ms"] = _int((time.monotonic() - started) * 1000)
+    if not local_stats:
+        row["stats"] = _no_stats("", {}, "local scan skipped (--no-stats)")
+    elif acct_type == "claude-code":
+        row["stats"] = scan_claude_stats(
+            now,
+            root=spec["config_dir"] / "projects",
+            state_dir=STATE_DIR,
+            provider=acct_id,
+        )
+    elif spec.get("brain_dir"):
+        row["stats"] = agy_usage.scan_stats(
+            sys.modules[__name__], now, root=spec["brain_dir"], state_dir=STATE_DIR
+        )
+    else:
+        row["stats"] = _no_stats(
+            "", {}, "shares local transcript folder with primary antigravity"
+        )
+    return row
 
 
 def document_totals(providers: list[dict]) -> dict:
@@ -3641,6 +3847,10 @@ def collect_all(only: list[str] | None = None, *, local_stats: bool = True) -> d
             else _no_stats("", {}, "local scan skipped (--no-stats)")
         )
         providers.append(row)
+    for spec in load_extra_accounts():
+        if only and spec["id"] not in only:
+            continue
+        providers.append(_collect_extra_account(spec, now, local_stats=local_stats))
     for spec in specs:
         if only and spec["id"] not in only:
             continue
@@ -3716,6 +3926,7 @@ def _selftest() -> int:
     os.environ["TMOS_USAGE_PROVIDERS_DIR"] = str(
         FIXTURES / "selftest-pinned-no-definitions"
     )
+    os.environ["TMOS_USAGE_ACCOUNTS_FILE"] = ""
     failures: list[str] = []
     now = datetime(2026, 9, 21, 20, 0, 0, tzinfo=timezone.utc)
 

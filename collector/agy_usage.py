@@ -82,12 +82,19 @@ def _log_file(path):
         yield Path(scratch) / LOG_NAME
 
 
-def cli_json(log_file=None):
-    binary = os.environ.get("TMOS_AGY_BIN") or shutil.which("agy")
-    if not binary:
-        fallback = Path.home() / ".local/bin/agy"
-        if fallback.is_file():
-            binary = str(fallback)
+def cli_json(log_file=None, binary=None):
+    if binary is not None:
+        resolved = Path(os.path.expanduser(str(binary)))
+        if resolved.is_file():
+            binary = str(resolved)
+        else:
+            binary = shutil.which(str(binary))
+    else:
+        binary = os.environ.get("TMOS_AGY_BIN") or shutil.which("agy")
+        if not binary:
+            fallback = Path.home() / ".local/bin/agy"
+            if fallback.is_file():
+                binary = str(fallback)
     if not binary:
         raise CliError("unavailable")
     code, raw = _run([binary, "--version"], 3)
@@ -114,7 +121,7 @@ def cli_json(log_file=None):
     return payload
 
 
-def parse_usage(c, payload, now=None):
+def parse_usage(c, payload, now=None, *, provider="antigravity"):
     now = now or c._now()
     command = payload.get("command") if isinstance(payload, dict) else None
     data = command.get("data") if isinstance(command, dict) and command.get("name") == "usage" else None
@@ -139,21 +146,29 @@ def parse_usage(c, payload, now=None):
                 parsed.append({"name": c._scrub(group["name"]), "windows":
                                sorted(windows.values(), key=lambda w: c.WINDOW_ORDER[w["name"]])})
     if not parsed:
-        return c.unknown("antigravity", "Official agy /usage returned no readable quota groups", source="cli")
+        return c.unknown(provider, "Official agy /usage returned no readable quota groups", source="cli")
     gemini = next((g for g in parsed if g["name"] == "Gemini Models"), None)
-    result = c.record("antigravity", status="ok", source="cli", observed_at=now,
+    result = c.record(provider, status="ok", source="cli", observed_at=now,
                       windows=gemini["windows"] if gemini else [],
                       note="Meters show Gemini quota; other model groups have separate allowances. Subscription tier is not reported by agy.")
     result["quota_groups"] = parsed
     return result
 
 
-def collect(c):
+def collect(c, *, provider="antigravity", binary=None, log_name=LOG_NAME, label=None):
     settings = c.read_json(Path.home() / ".gemini/antigravity-cli/settings.json")
     if isinstance(settings, dict) and settings.get("modelProvider") == "gemini":
-        return c.unknown("antigravity", "agy is configured for Gemini API billing; use its Google subscription sign-in for quota", source="cli")
+        out = c.unknown(provider, "agy is configured for Gemini API billing; use its Google subscription sign-in for quota", source="cli")
+        if label:
+            out["label"] = label
+        return out
     try:
-        return parse_usage(c, cli_json(c.STATE_DIR / LOG_NAME))
+        payload = (
+            cli_json(c.STATE_DIR / log_name)
+            if binary is None
+            else cli_json(c.STATE_DIR / log_name, binary=binary)
+        )
+        out = parse_usage(c, payload, provider=provider)
     except CliError as exc:
         reasons = {
             "unavailable": "Install the official Antigravity CLI (agy) to read its quota",
@@ -162,8 +177,11 @@ def collect(c):
             "unauthenticated": "Run agy interactively and sign in with your Google subscription account",
             "timeout": "Official agy quota check timed out; retry after checking agy",
         }
-        return c.unknown("antigravity", reasons.get(str(exc), "Official agy quota check failed; check agy interactively"),
-                         source="cli", status="unauthenticated" if str(exc) == "unauthenticated" else "unknown")
+        out = c.unknown(provider, reasons.get(str(exc), "Official agy quota check failed; check agy interactively"),
+                        source="cli", status="unauthenticated" if str(exc) == "unauthenticated" else "unknown")
+    if label:
+        out["label"] = label
+    return out
 
 
 # A conversation keeps two exports of the same numbered steps. Neither is canonical: either can be
